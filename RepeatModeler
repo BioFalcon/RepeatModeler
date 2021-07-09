@@ -49,7 +49,7 @@ using the "-name" option.
 
 Specify the number of parallel search jobs to run.  RMBlast jobs will
 use 4 cores each and ABBlast jobs will use a single core each.
-i.e. on a machine with 12 cores and running with RMBlast you would use 
+i.e. on a machine with 12 cores and running with RMBlast you would use
 -pa 3 to fully utilize the machine.
 
 =item -recoverDir <Previous Output Directory>
@@ -68,13 +68,13 @@ should be an integer number.
 
 =item -LTRStruct
 
-Run the LTR structural discovery pipeline ( LTR_Harvest and LTR_retreiver ) and 
+Run the LTR structural discovery pipeline ( LTR_Harvest and LTR_retreiver ) and
 combine results with the RepeatScout/RECON pipeline. [optional]
 
 =item -genomeSampleSizeMax #
 
 Optionally change the maximum bp of the genome to sample in all rounds
-of RECON (default=243000000).  
+of RECON (default=243000000).
 
 =back
 
@@ -136,6 +136,9 @@ use SeqDBI;
 use SimpleBatcher;
 use FastaDB;
 
+
+use Devel::Size qw(size total_size);
+
 #
 # Global Class Variables/Constants
 #
@@ -170,12 +173,15 @@ my @getopt_args = (
                     '-pa=i',
                     '-srand=i',
                     '-rsSampleSize=s',
+                    '-numAddlRounds=s',
                     '-genomeSampleSizeMax=s',
                     '-LTRStruct',
                     '-LTRMaxSeqLen=i',
                     '-onlyRS',
                     '-skipRS',
                     '-onlyIns',
+                    '-genomeSampleSizeMultiplier=s',
+                    '-reconSampleSizeStart=s',
 );
 
 # Add configuration parameters as additional command-line options
@@ -265,6 +271,11 @@ if ( $options{'LTRStruct'} ) {
 "\n  LTRPipeline dependency missing or incorrectly set for $param!\n   Rerun ./configure or check your command line to ensure that RepeatModeler\n  has access to and the correct version of this dependency.\n\n";
     }
   }
+  unless ( eval "require threads;" )
+  {
+    die "LTRRetriever used in the LTRPipeline depends on perl threads.  This version of\n".
+        "perl does not appear to be compiled with the thread option.\n";
+  }
 }
 
 if ( $options{'version'} ) {
@@ -335,7 +346,12 @@ my $genomeSampleSizeMax        = 243000000;    # The max sample size for
                                                #   RECON analysis
 my $genomeSampleSizeMultiplier = 3;            # The multiplier for sample size
                                                #   between rounds
+my $numAdditionalRounds = 0;                   # Number of additional rounds at
+                                               #   genomeSampleSizeMax to run.
 
+$numAdditionalRounds         = $options{'numAddlRounds'} if ( $options{'numAddlRounds'} );
+$reconSampleSizeStart        = $options{'reconSampleSizeStart'} if ( $options{'reconSampleSizeStart'} );
+$genomeSampleSizeMultiplier  = $options{'genomeSampleSizeMultiplier'} if ( $options{'genomeSampleSizeMultiplier'} );
 #
 # Override the RepeatScout sample size
 #
@@ -370,6 +386,7 @@ if ( $options{'onlyIns'} ) {
   $reconSampleSizeStart       = 200000;
   $genomeSampleSizeMultiplier = 4;
   $recommendedFamilySize      = 50;
+  $numAdditionalRounds = 0;
 }
 
 #
@@ -402,7 +419,7 @@ print "=" x length( $title ) . "\n";
 print "Search Engine = $engine " . $searchEngineN->getVersion() . "\n";
 print "Dependencies: TRF " . RepModelConfig::getDependencyVersion("TRF_PRGM") . ", RECON " . RepModelConfig::getDependencyVersion("RECON_DIR") . ", RepeatScout " . RepModelConfig::getDependencyVersion("RSCOUT_DIR") . ", RepeatMasker " . RepModelConfig::getDependencyVersion("REPEATMASKER_DIR") . "\n";
 if ( $options{'LTRStruct'} ) {
-  print "LTR Structural Analysis: Enabled ( " . 
+  print "LTR Structural Analysis: Enabled ( " .
       "GenomeTools " . RepModelConfig::getDependencyVersion("GENOMETOOLS_DIR") . ", " .
       "LTR_Retriever " . RepModelConfig::getDependencyVersion("LTR_RETRIEVER_DIR") . ",\n" .
       "                                   Ninja " . RepModelConfig::getDependencyVersion("NINJA_DIR") . ", " .
@@ -415,37 +432,44 @@ else {
 print "Random Number Seed: $seed\n";
 print "Database = $genomeDB ";
 
-my %dbSeqs;    # Hash containing the names of all the DB seq IDs and their size
-my @dbSeqIDArray = ();
+#my %dbSeqs;    # Hash containing the names of all the DB seq IDs and their size
+#my @dbSeqIDArray = ();
 my $dbSize       = 0;
 my @contigSizes  = ();
 while ( $dbIndex =~ />?(\S+)\s+(\d+)\s*$/mg ) {
-  print "." if ( ( $#dbSeqIDArray % 10000 ) == 0 );
-  $dbSeqs{$1} = $2;
+  #print "." if ( ( $#dbSeqIDArray % 10000 ) == 0 );
+  print "." if ( ( $#contigSizes % 10000 ) == 0 );
+  #$dbSeqs{$1} = $2;
   push @contigSizes,  $2;
-  push @dbSeqIDArray, $1;
+  #push @dbSeqIDArray, $1;
   $dbSize += $2;
 }
 undef $dbIndex;
 print "\n";
+#die "Database $genomeDB does not contain any sequences!\n"
+#    if ( keys( %dbSeqs ) == 0 );
 die "Database $genomeDB does not contain any sequences!\n"
-    if ( keys( %dbSeqs ) == 0 );
-print "  - Sequences = " . ( $#dbSeqIDArray + 1 ) . "\n";
+    if ( scalar(@contigSizes) < 1 );
+#print "  - Sequences = " . ( $#dbSeqIDArray + 1 ) . "\n";
+print "  - Sequences = " . ( $#contigSizes + 1 ) . "\n";
 print "  - Bases = $dbSize\n";
 
 if ( @contigSizes > 100 ) {
-  @contigSizes = sort { $a <=> $b } @contigSizes;
+  # Should be longest to shortest for N50 calc: Fixed 20210225
+  @contigSizes = sort { $b <=> $a } @contigSizes;
 
   my $tabSize      = 0;
   my $halfAssembly = $dbSize / 2;
   my $N50          = 0;
   for ( my $i = 0 ; $i < $#contigSizes ; $i++ ) {
-    last if ( $tabSize + $contigSizes[ $i ] > $halfAssembly );
     $tabSize += $contigSizes[ $i ];
     $N50 = $contigSizes[ $i ];
+    last if ( $tabSize + $contigSizes[ $i ] > $halfAssembly );
   }
   print "  - N50 = $N50\n";
 
+  # Sort shortest to longest for histogram
+  @contigSizes = sort { $a <=> $b } @contigSizes;
   print "  - Contig Histogram:\n";
   print
 "  Size(bp)                                                        Count\n";
@@ -460,6 +484,11 @@ if ( @contigSizes > 100 ) {
 
   foreach my $val ( @contigSizes ) {
     my $bin = int( ( $val - $minVal ) / $binSize );
+    # JR 20200121: the largest contig will normally end up in
+    # "one-past-the-last" bin by the above formula
+    if ($bin >= $numBins) {
+      $bin = $numBins - 1;
+    }
     $bins[ $bin ]++;
     $maxHistBarCnt = $bins[ $bin ] if ( $bins[ $bin ] > $maxHistBarCnt );
   }
@@ -513,6 +542,7 @@ else {
                                                dbSize          => $dbSize
   );
 }
+
 
 #
 # Randomize List
@@ -730,7 +760,8 @@ print "      be terminated early.\n";
 #    Sample from the sequence database starting from $reconSampleSizeStart
 #  and increasing by a factor of $genomeSampleSizeMultiplier until either
 #  the sequence database is fully covered or we complete one round with
-#  the sample size at $genomeSampleSizeMax
+#  the sample size at $genomeSampleSizeMax.  NOTE: If -numAddlRounds is
+#  used, then additional rounds at $genomeSampleSizeMax will be run.
 #
 elapsedTime( "runtime" );    # Setup the timers
 
@@ -760,7 +791,7 @@ while ( 1 ) {
        || (
             !$options{'onlyIns'}
             && (    $totSampledBP >= $dbSize
-                 || $sampleSize >= $genomeSampleSizeMax
+                 || ( $sampleSize >= $genomeSampleSizeMax && $numAdditionalRounds <= 0 )
                  || $seqRemaining < $fragmentSize )
        )
       )
@@ -768,16 +799,13 @@ while ( 1 ) {
 
     # this round will be last
     $inLastRound = 1;
-
- #print "   - Last round, lowering family cutoff to $minFamilySize elements.\n";
- #$familyCutoff = $minFamilySize;
+    #print "   - Last round, lowering family cutoff to $minFamilySize elements.\n";
+    #$familyCutoff = $minFamilySize;
     if ( $options{'onlyIns'} ) {
-      print
-"   - Last round, lowering family cutoff to $insertMinFamilySize elements.\n";
+      print "   - Last round, lowering family cutoff to $insertMinFamilySize elements.\n";
       $familyCutoff = $insertMinFamilySize;
     }
   }
-
   # Setup file locations
   my $roundTmpDir       = "$tmpDir/round-$round";
   my $instFile          = "$tmpDir/instdb.txt";
@@ -847,6 +875,7 @@ while ( 1 ) {
     $actualGenomeSampleSize += $sampleDB->getSeqLength( $seqID );
   }
   undef $sampleDB;
+  #print "sampleContigs = " . total_size(\%sampleContigs) . "\n";
 
   if ( $round == 1 ) {
     print "   - Final Sample Size = $actualGenomeSampleSize "
@@ -884,7 +913,7 @@ while ( 1 ) {
                 . "$roundTmpDir/makeblastdb.log 2>&1" );
       }
 
-      ( $families, $numModels ) = &buildRSConsensi(
+      ( $numModels ) = &buildRSConsensi(
                                  workDir          => $roundTmpDir,
                                  consensiFile     => $consensiFile,
                                  combFamiliesFile => $combFamiliesFile,
@@ -894,6 +923,9 @@ while ( 1 ) {
                                  numContigs => scalar( keys( %sampleContigs ) ),
                                  usedBlockIndex => $usedBlockIndex
       );
+      # We don't need to keep the large families datastructure around
+      # at this point
+      undef $families;
     }
     else {
       system( "touch $sampleFastaFile.rscons.filtered" );
@@ -908,6 +940,9 @@ while ( 1 ) {
 
     next;
   }
+  #print "families size = " . total_size($families) . "\n";
+  #print "engine size = " . total_size($engine) . "\n";
+  #print "usedBlockIndex= " . total_size($usedBlockIndex) . "\n";
 
   print "   - Sequence extraction : " . elapsedTime( 3 ) . "\n";
 
@@ -969,7 +1004,11 @@ while ( 1 ) {
 
     if ( $options{'onlyIns'} ) {
 
-      # Remove sequences containing only/mostly Ns
+      # Remove sequences containing only/mostly Ns.  Because we
+      # need to preserve the id's *and* they need to be contiguous,
+      # we will simply replace these sequences with a short run
+      # of N's as a placeholder.
+      # First, reverse the replacement above ( masked is masked )
       system( "mv $roundTmpDir/tmpSample.fa $roundTmpDir/tmpSample.fa.masked" );
       open IN,  "<$roundTmpDir/tmpSample.fa.masked" or die;
       open OUT, ">$roundTmpDir/tmpSample.fa"        or die;
@@ -989,6 +1028,7 @@ while ( 1 ) {
               print OUT ">$id $desc\n$seq\n";
             }
             else {
+              print OUT ">$id $desc\nNNNNNNNNNN\n";
               $seqsCut++;
             }
           }
@@ -1007,6 +1047,7 @@ while ( 1 ) {
           print OUT ">$id $desc\n$seq\n";
         }
         else {
+          print OUT ">$id $desc\nNNNNNNNNNN\n";
           $seqsCut++;
         }
       }
@@ -1512,13 +1553,16 @@ while ( 1 ) {
 #  }
 #}
       my $tmpNumModels = 0;
-      ( $families, $tmpNumModels ) = &buildReconConsensi(
+      ( $tmpNumModels ) = &buildReconConsensi(
                                           workDir          => $roundTmpDir,
                                           consensiFile     => $consensiFile,
                                           combFamiliesFile => $combFamiliesFile,
                                           round            => $round,
                                           familyCutoff     => $familyCutoff
       );
+      # We don't need to keep the large families datastructure around
+      # at this point
+      undef $families;
       $numModels += $tmpNumModels;
     }
     else {
@@ -1576,11 +1620,15 @@ while ( 1 ) {
   }
   else {
     if (    $totSampledBP >= $dbSize
-         || $sampleSize >= $genomeSampleSizeMax
+         || ( $sampleSize >= $genomeSampleSizeMax && $numAdditionalRounds <= 0 )
          || $seqRemaining < $fragmentSize )
     {
       last;
     }
+  }
+  if ( $numAdditionalRounds > 0 && $sampleSize >= $genomeSampleSizeMax )
+  {
+    $numAdditionalRounds--;
   }
 
   # This is a followup round of RECON, scale sampleSize accordingly
@@ -2274,7 +2322,7 @@ sub buildRSConsensi {
   $searchEngineN->setQuery( "$workDir/consensi.fa" );
   #    3. For each family which has a off diagonal match to itself
   #       calculate the coverage of the off diagonal hits
-  #       Filter out families which are larger than 3kb, 
+  #       Filter out families which are larger than 3kb,
   #       are covered by >90% by off diagonal hits.
   my %satelliteSeqIDs = ();
   my ( $status, $resultCollection ) = $searchEngineN->search();
@@ -2305,7 +2353,7 @@ sub buildRSConsensi {
       }
       my $consDB = FastaDB->new( fileName => "$workDir/consensi.fa",
                                  openMode => SeqDBI::ReadOnly );
-      open OUTC, ">$workDir/consensi-filtered.fa" or 
+      open OUTC, ">$workDir/consensi-filtered.fa" or
          die "Could not open $workDir/consensi-filtered.fa for writing!\n";
 
       foreach my $seqID ( $consDB->getIDs() ) {
@@ -2320,7 +2368,7 @@ sub buildRSConsensi {
         }
       }
       close OUTC;
-      $consDB = undef;
+      undef $consDB;
 
       system("mv $workDir/consensi-filtered.fa $workDir/consensi.fa");
     }
@@ -2406,7 +2454,6 @@ sub buildRSConsensi {
         foreach my $ele ( sort { $b->{'score'} <=> $a->{'score'} }
                           @{ $families{$key}->{'elements'} } )
         {
-
           # Number of elements to keep
           last if ( $numElements == 100 );
           print FAM ">" . $ele->{'seqID'} . "\n";
@@ -2601,7 +2648,9 @@ sub buildRSConsensi {
 
   }
   undef $searchEngineN;
-  return \%families, $numModels;
+  #return \%families, $numModels;
+  undef %families;
+  return $numModels;
 
 }
 
@@ -2958,7 +3007,9 @@ sub buildReconConsensi {
   close OUTS;
   print "Family Refinement: " . elapsedTime( "family_refinement" ) . "\n";
 
-  return \%families, $numModels;
+  #return \%families, $numModels;
+  undef %families;
+  return $numModels;
 }
 
 #
@@ -3308,4 +3359,3 @@ sub elapsedTime {
 }
 
 1;
-
