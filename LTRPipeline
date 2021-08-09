@@ -84,6 +84,9 @@ use lib $FindBin::RealBin;
 use RepModelConfig;
 use SeedAlignment;
 use SeedAlignmentCollection;
+use Bio::SeqIO;
+use Parallel::ForkManager;
+
 
 #
 # Magic numbers/constants here
@@ -680,105 +683,151 @@ sub runLtrRetriever {
 }
 
 sub runLtrHarvest {
-  my $binDir  = shift;
-  my $seqFile = shift;
-  my $outFile = shift;
-  my $threads = shift;
-  my $wrkDir  = shift;
+    my $binDir  = shift;
+    my $seqFile = shift;
+    my $outFile = shift;
+    my $threads = shift;
+    my $wrkDir  = shift;
 
-  die "LTRPipeline::runLtrHarvest : Could not find input file $seqFile\n"
-      if ( !-s $seqFile );
+    die "LTRPipeline::runLtrHarvest : Could not find input file $seqFile\n" if ( !-s $seqFile );
 
-  # Flag to maintain files should an error occur
-  my $errorFlag = 0;
+    # Flag to maintain files should an error occur
+    my $errorFlag = 0;
 
-  # Total number of annotations found
-  my $annotCnt = 0;
-
-  # Create temporary directory
-  my $tmpDir;
-  if ( !defined $wrkDir || !-d $wrkDir ) {
+    # Create temporary directory
+    my $tmpDir;
+    if ( !defined $wrkDir || !-d $wrkDir ) {
     $tmpDir = &createTempDir( [ dirname( $seqFile ), cwd() ], "LHAR" );
-  }
-  else {
-    $tmpDir = &createTempDir( [ $wrkDir ], "LHAR" );
-  }
-  print "LTRPipeline::runLtrHarvest : tmpdir = $tmpDir\n" if ( $DEBUG );
-
-  # Build enhanced suffix array datastructure for Ltr_harvest
-  # Must run in the tmpDir as this program will insist on creating
-  # esa_* files in the working directory only
-  my $full_seqFile = File::Spec->rel2abs( $seqFile );
-  my $origDir      = getcwd();
-  my $addlOpts     = "";
-
-# There is a bug in 1.5.9 and 1.5.10 that appears to not generate the correct files
-# if -j is used.
-#$addlOpts = "-j $options{'pa'} " if ( $options{'pa'} );
-  chdir( $tmpDir );
-  my $cmd =
-"$binDir/gt $addlOpts suffixerator -db $full_seqFile -indexname esa_index -tis -suf -lcp -des -ssp -sds -dna > suffixerator.log 2>&1";
-  my $retCode = system( $cmd);
-  if ( $retCode != 0 ) {
-    warn
-"LtrPipeline: GenomeTools failed to build suffixtree datastructure.  This is frequently\n"
-        . "             caused by a lack of disk space. Error code: "
-        . ( $? >> 8 ) . "\n";
-    $errorFlag = 1;
-    chdir( $origDir );
-  }
-  else {
-
-    # Run ltrharvest
-    $cmd =
-"$binDir/gt $addlOpts ltrharvest -index esa_index -out ltrharvest.out > ltrharvest.log 2>&1";
-    $retCode = system( $cmd);
-    chdir( $origDir );
-    if ( $retCode != 0 ) {
-      warn "LtrPipeline: GenomeTools failed to run ltrharvest. Error code: "
-          . ( $? >> 8 ) . "\n";
-      $errorFlag = 1;
-    }
-    if ( -s "$tmpDir/ltrharvest.log" ) {
-      open IN, "<$tmpDir/ltrharvest.log"
-          or die "Could not open $tmpDir/ltrharvest.log for reading!\n";
-      open OUT, ">$outFile" or die "Could not open $outFile for writing!\n";
-      while ( <IN> ) {
-        if ( /^#/ ) {
-          print OUT;
-        }
-        elsif ( /^\d+\s+\d+\s+\d+\s+\d+/ ) {
-          $annotCnt++;
-          print OUT;
-        }
-        elsif ( /^\s*$/ ) {
-
-          # Don't save
-        }
-        else {
-          warn
-              "LtrPipeline: Ltrharvest returned an unexpected result line:\n$_";
-          $errorFlag = 1;
-        }
-      }
-      close IN;
-      close OUT;
     }
     else {
-
-      # Expected some sort of output
-      $errorFlag = 1;
+    $tmpDir = &createTempDir( [ $wrkDir ], "LHAR" );
     }
-  }
+    print "LTRPipeline::runLtrHarvest : tmpdir = $tmpDir\n" if ( $DEBUG );
 
-  unless ( $DEBUG || $errorFlag ) {
-    rmtree( $tmpDir );
-  }
+    #Get absolute paths
+    my $full_seqFile = File::Spec->rel2abs( $seqFile );
+    my $origDir      = getcwd();
 
-  print "LTRPipeline::runLtrHarvest : Returning $annotCnt annotations.\n"
-      if ( $DEBUG );
-  return $annotCnt;
+    #Read sequence file
+    my $seqio = Bio::SeqIO->new(-file => $full_seqFile, '-format' => 'Fasta');
+
+    #Sequence counter, to know where to do each loop
+    my $seqCounter=0;
+
+    #Count how many sequences are there in the file for the last loop
+    my $fastaLen = `grep -c '>' $seqFile`;
+    my $Last     = 0;
+
+    #Set chunk size for fasta split
+    my $chunkSize = 1000;
+
+    #Create first file before the loop
+    my $CurrentTempFasta="temp1_".$chunkSize.".fa";
+    open (tempFile_LTRH,'>',$CurrentTempFasta);
+
+    #Hash to store the fasta files for parallel run
+    my %FastaFiles = ($seqCounter => [($seqCounter,$CurrentTempFasta,$chunkSize)] );
+
+    #Loop through the fasta file seq by seq, creating shorter fasta files
+    print('LTRPipeline::runLtrHarvest Creating shorted fasta files...');
+    while(my $seq = $seqio->next_seq) {
+        #Read and store each sequence until it reaches 1000
+        my $SeqID = $seq->id;
+        my $SeqSeq= join("\n", unpack('(A80)*',$seq->seq));
+        print tempFile_LTRH ">".$SeqID."\n".$SeqSeq."\n";
+        $seqCounter +=1;
+        if ($seqCounter%$chunkSize==0 and $Last ==0){
+            if ($seqCounter+$chunkSize >= $fastaLen){
+                $Last=1;
+                $chunkSize=$fastaLen % $chunkSize;
+            }
+            my $CurrentTempFasta ="temp".($seqCounter+1)."_".($seqCounter+$chunkSize).".fa";
+            $FastaFiles{$seqCounter}=[($seqCounter,$CurrentTempFasta,$chunkSize)];
+            open (tempFile_LTRH,'>',$CurrentTempFasta);
+        }
+        if ($seqCounter == $fastaLen){
+            close(tempFile_LTRH);
+            last;
+        };
+    }
+    print("DONE\n\n");
+    print("LTRPipeline::runLtrHarvest Original fasta was split into ".(keys %FastaFiles)." parts\n\n");
+
+    #Initialize parallelfork manager
+    my $manager_LTRHarvest = Parallel::ForkManager->new($threads);
+
+    #Do the loop with forks
+    for my $keys (keys %FastaFiles){
+        $manager_LTRHarvest->start and next;
+
+        #Get the starting number to printout
+        my $SeqRangeEnd=$FastaFiles{$keys}[0]+$FastaFiles{$keys}[2];
+        print("LTRPipeline::runLtrHarvest Analysing sequences $FastaFiles{$keys}[0]-$SeqRangeEnd...\n");
+        
+        #Run suffixerator
+        my $cmd = "$binDir/gt suffixerator -db $FastaFiles{$keys}[1] -indexname $FastaFiles{$keys}[1]_index -tis -suf -lcp -des -ssp -sds -dna > $FastaFiles{$keys}[1]_suffixerator.log 2>&1";
+        my $retCode = system( $cmd);
+
+        #Check if suffixerator worked
+        if ( $retCode != 0 ) {
+            warn "LtrPipeline: GenomeTools failed to build suffixtree datastructure.  This is frequently\n". "             caused by a lack of disk space. Error code: " . ( $? >> 8 ) . "\n";
+            $errorFlag = 1;
+        }
+
+        #Run ltrharvest
+        $cmd = "$binDir/gt ltrharvest -index $FastaFiles{$keys}[1]_index -out ltrharvest_$FastaFiles{$keys}[0].out > ltrharvest_$FastaFiles{$keys}[1].log 2>&1";
+        $retCode = system( $cmd);
+
+        #Check if ltrharvest worked
+        if  ( $retCode != 0 ) {
+            warn "LtrPipeline: GenomeTools failed to run ltrharvest. Error code: " . ( $? >> 8 ) . "\n";
+            $errorFlag = 1;
+        }
+
+        #Fix the results, changing the last number
+        print("LTRPipeline::runLtrHarvest Fixing results $FastaFiles{$keys}[0]-$SeqRangeEnd...\n");
+        open(ltrHarvest_out, '<', "ltrharvest_".$FastaFiles{$keys}[1].".log");
+        open(ltrHarvest_outFix,'>',"ltrharvest_".$FastaFiles{$keys}[1].".Fixed.log");
+        while(<ltrHarvest_out>){
+            if (/^#/){
+                print ltrHarvest_outFix $_;
+            }else{
+            my @LTRHarvRes = split('  ',$_);
+            $LTRHarvRes[$#LTRHarvRes]=$FastaFiles{$keys}[0]+$LTRHarvRes[$#LTRHarvRes];
+            my $LTRHarvFix = join("  ",@LTRHarvRes); 
+                print ltrHarvest_outFix $LTRHarvFix."\n";
+            }
+        }
+        $manager_LTRHarvest->finish;
+    }
+    $manager_LTRHarvest->wait_all_children;
+
+    #Change to original directory
+    chdir( $origDir )
+    
+    #Merge the results
+    print("LTRPipeline::runLtrHarvest Merging Results...");
+    my $Header=0;
+    open (OutputFinal_LTRHarvest,'>',$outFile);
+    my @LTR_FinalOutputs=glob("$tmpDir/ltrharvest*Fixed.log");
+
+    foreach(@LTR_FinalOutputs){
+        open(CurrentLogFile, '<', $_);
+        while(<CurrentLogFile>){
+            if ($_ =~ /^#/ and $Header == 0){
+                print OutputFinal_LTRHarvest "$_";
+            }elsif ($_ !~ /^#/ ){
+                print OutputFinal_LTRHarvest "$_";
+            }
+        }
+        $Header=1;
+    }
+    #Sort the results 
+    my $cmd="sed 's/  /\t/g' $outFile | sort -k11,11n --parallel=$threads | sed 's/\t/  /g' >temp_SortedLTRHarv.txt && mv temp_SortedLTRHarv.txt $outFile";
+    my $retCode = system( $cmd);
+    print("DONE\n");
 }
+
 
 sub runLtrDetector {
   my $binDir  = shift;
