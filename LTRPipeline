@@ -718,7 +718,7 @@ sub runLtrHarvest {
     my $seqCounter=0;
 
     #Count how many sequences are there in the file for the last loop
-    my $fastaLen = `grep -c '>' $seqFile`;
+    my $fastaLen = `grep -c '>' $full_seqFile`;
     my $Last     = 0;
 
     #Set chunk size for fasta split
