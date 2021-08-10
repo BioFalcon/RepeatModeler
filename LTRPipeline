@@ -803,7 +803,7 @@ sub runLtrHarvest {
     $manager_LTRHarvest->wait_all_children;
 
     #Change to original directory
-    chdir( $origDir )
+    chdir( $origDir );
     
     #Merge the results
     print("LTRPipeline::runLtrHarvest Merging Results...");
