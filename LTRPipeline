@@ -739,7 +739,7 @@ sub runLtrHarvest {
         my $SeqSeq= join("\n", unpack('(A80)*',$seq->seq));
         print tempFile_LTRH ">".$SeqID."\n".$SeqSeq."\n";
         $seqCounter +=1;
-        if ($seqCounter%$chunkSize==0 and $Last ==0){
+        if (int($seqCounter % $chunkSize)==0 and $Last ==0){
             if ($seqCounter+$chunkSize >= $fastaLen){
                 $Last=1;
                 $chunkSize=$fastaLen % $chunkSize;
