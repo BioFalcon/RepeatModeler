@@ -708,6 +708,9 @@ sub runLtrHarvest {
     my $full_seqFile = File::Spec->rel2abs( $seqFile );
     my $origDir      = getcwd();
 
+    #Change Dir
+    chdir( $tmpDir );
+
     #Read sequence file
     my $seqio = Bio::SeqIO->new(-file => $full_seqFile, '-format' => 'Fasta');
 
