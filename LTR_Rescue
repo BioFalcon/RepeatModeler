@@ -20,11 +20,8 @@ my $threads = 64;
 my $tempDir ='LTR_73426.WedAug111617242021';
 
 #load the paths to the software
-my $LTR_DETECTOR_DIR;
-my $LTR_RETRIEVER_DIR = $config->{'LTR_RETRIEVER_DIR'}->{'value'};
-my $MAFFT_DIR         = $config->{'MAFFT_DIR'}->{'value'};
-my $NINJA_DIR         = $config->{'NINJA_DIR'}->{'value'};
-my $GENOMETOOLS_DIR   = $config->{'GENOMETOOLS_DIR'}->{'value'};
+my $MAFFT_DIR         = "/opt/mafft/bin";
+my $NINJA_DIR         = "/opt/NINJA/NINJA";
 
 elapsedTime( "step" );
 
@@ -114,8 +111,7 @@ foreach my $cluster ( sort keys %clusters ) {
   # Run Refiner on the seeds
   my $additionalOpts = "";
   my $cmd ="$FindBin::RealBin/Refiner -noTmp $additionalOpts -name ltr-1_family-$idx $tempDir/ltr-1_family-$idx.fa";
-  $cmd .= " -quiet" unless ( $DEBUG );
-  print "LTRPipeline: Running $cmd\n" if ( $DEBUG );
+  print "LTRPipeline: Running $cmd\n";
   system( $cmd );
 
   # family-72.fa.refiner.stk
@@ -197,7 +193,7 @@ sub runNinja {
   else {
     $tmpDir = &createTempDir( [ $wrkDir ], "NINJA" );
   }
-  print "LTRPipeline::runNinja : tmpdir = $tmpDir\n" if ( $DEBUG );
+  print "LTRPipeline::runNinja : tmpdir = $tmpDir\n";
 
   my $cmd =
 "$binDir/Ninja --in $alnFile --out $tmpDir/cluster.dat --out_type c --corr_type m --cluster_cutoff 0.2";
@@ -206,7 +202,7 @@ sub runNinja {
   }
   $cmd .= " > $tmpDir/Ninja.log 2>&1";
 
-  print "LTRPipeline::runNinja : Running analysis $cmd\n" if ( $DEBUG );
+  print "LTRPipeline::runNinja : Running analysis $cmd\n";
   system( $cmd);
 
   if ( -s "$tmpDir/cluster.dat" ) {
@@ -214,9 +210,6 @@ sub runNinja {
   }
 
   # TODO: Consider keeping on error
-  unless ( $DEBUG ) {
-    rmtree( $tmpDir );
-  }
 
 }
 
@@ -239,23 +232,18 @@ sub runMafft {
     $tmpDir = &createTempDir( [ $wrkDir ], "MAFFT" );
   }
   $ENV{MAFFT_TMPDIR} = $tmpDir;
-  print "LTRPipeline::runMafft : tmpdir = $tmpDir\n" if ( $DEBUG );
+  print "LTRPipeline::runMafft : tmpdir = $tmpDir\n";
 
   my $cmd = "$binDir/mafft --large --quiet";
   if ( defined $threads && $threads > 1 ) {
     $cmd .= " --thread $threads";
   }
   $cmd .= " $seqFile > $tmpDir/mafft-alignment.fa";
-  print "LTRPipeline::runMafft : Running analysis $cmd\n" if ( $DEBUG );
+  print "LTRPipeline::runMafft : Running analysis $cmd\n";
   system( $cmd);
 
   if ( -s "$tmpDir/mafft-alignment.fa" ) {
     system( "mv $tmpDir/mafft-alignment.fa $outFile" );
-  }
-
-  # TODO: Consider keeping on error
-  unless ( $DEBUG ) {
-    rmtree( $tmpDir );
   }
 
 }
