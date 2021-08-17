@@ -1,0 +1,318 @@
+#!/usr/bin/perl
+
+use strict;
+use Getopt::Long;
+use Data::Dumper;
+use Pod::Text;
+use File::Path;
+use File::Basename;
+use FindBin;
+use Cwd;
+use Time::HiRes qw( gettimeofday tv_interval);
+use lib $FindBin::RealBin;
+use RepModelConfig;
+use SeedAlignment;
+use SeedAlignmentCollection;
+
+#Setup variables usedx for the software
+my $ltrSeqLimit = 20000;
+my $threads = 64;
+my $tempDir ='LTR_73426.WedAug111617242021';
+
+#load the paths to the software
+my $LTR_DETECTOR_DIR;
+my $LTR_RETRIEVER_DIR = $config->{'LTR_RETRIEVER_DIR'}->{'value'};
+my $MAFFT_DIR         = $config->{'MAFFT_DIR'}->{'value'};
+my $NINJA_DIR         = $config->{'NINJA_DIR'}->{'value'};
+my $GENOMETOOLS_DIR   = $config->{'GENOMETOOLS_DIR'}->{'value'};
+
+elapsedTime( "step" );
+
+##Aligning sequences with MAFFT
+print "Aligning instances...";
+&runMafft( $MAFFT_DIR, "$tempDir/LtrRetriever-redundant-results.fa", "$tempDir/mafft-alignment.fa", $threads );
+if ( !-s "$tempDir/mafft-alignment.fa" ) {
+    print "LTRPipeline: Error - could not produce a multiple alignment from the denovo LTR results.\n";
+exit;
+}
+print "     : " . elapsedTime( "step" ) . "\n";
+
+##Clustering the results using NINJA
+print "Clustering...";
+&runNinja( $NINJA_DIR, "$tempDir/mafft-alignment.fa", "$tempDir/clusters.dat", $threads );
+if ( !-s "$tempDir/clusters.dat" ) {
+    print "LTRPipeline: Error - could not cluster MAFFT results.\n";
+}
+print "             : " . elapsedTime( "step" ) . "\n";
+
+
+# Read NINJA clusters data
+print "Loading clusters...";
+open IN, "<$tempDir/clusters.dat" or die "LTRPipeline : Error - could not open $tempDir/clusters.dat!";
+my %clusters;
+while ( <IN> ) {
+    # 0	utg7180_2262700..2263120_LTR#LTR/Gypsy
+    if ( /^(\d+)\s+(\S+)\s*$/ ) {
+        push @{ $clusters{$1} }, $2;
+    }
+}
+close IN;
+print "             : " . elapsedTime( "step" ) . "\n";
+
+# Read in Ltr_Retriever sequences
+print "Loading LTR_retriever sequences...";
+open IN, "<$tempDir/LtrRetriever-redundant-results.fa" or die "LTRPipeline : Error - could not open $tempDir/LtrRetriever-redundant-results.fa!";
+my %seeds = ();
+my $seq   = "";
+my $id    = "";
+while ( <IN> ) {
+  if ( /^>(\S+)/ ) {
+    my $tmpID = $1;
+    if ( $seq ) {
+      $seeds{$id} = $seq;
+    }
+    $seq = "";
+    $id  = $tmpID;
+    next;
+  }
+  s/[\n\r\s]+//g;
+  $seq .= $_;
+}
+if ( $seq ) {
+  $seeds{$id} = $seq;
+}
+close IN;
+print "             : " . elapsedTime( "step" ) . "\n";
+
+
+# Process each cluster
+## Generating one alignment file per family
+print "Refining families...";
+open OUTSTK, ">$tempDir/families.stk"
+    or die "Could not create $tempDir/families.stk!\n";
+open OUTCON, ">$tempDir/families.fa"
+    or die "Could not create $tempDir/families.fa!\n";
+foreach my $cluster ( sort keys %clusters ) {
+  my $idx = $cluster + 1;
+
+  # Make a fasta file for family ( cluster ).
+  open OUT, ">$tempDir/ltr-1_family-$idx.fa"
+      or die "LTRPipeline : Could not create $tempDir/ltr-1_family-$idx.fa!";
+  my $intCount = 0;
+  my $ltrCount = 0;
+  foreach my $seedID ( @{ $clusters{$cluster} } ) {
+    if ( $seedID =~ /_LTR/ ) {
+      $ltrCount++;
+    }
+    else { $intCount++; }
+    print OUT ">$seedID\n$seeds{$seedID}\n";
+  }
+  close OUT;
+  my $famType = "LTR";
+  $famType = "INT" if ( $intCount > $ltrCount );
+
+  # Run Refiner on the seeds
+  my $additionalOpts = "";
+  my $cmd ="$FindBin::RealBin/Refiner -noTmp $additionalOpts -name ltr-1_family-$idx $tempDir/ltr-1_family-$idx.fa";
+  $cmd .= " -quiet" unless ( $DEBUG );
+  print "LTRPipeline: Running $cmd\n" if ( $DEBUG );
+  system( $cmd );
+
+  # family-72.fa.refiner.stk
+  if ( -s "$tempDir/ltr-1_family-$idx.fa.refiner_cons" ) {
+    my $cons;
+    my $maSize;
+    open INREF, "<$tempDir/ltr-1_family-$idx.fa.refiner_cons"
+        or die "LTRPipeline"
+        . ": Could not open refined model $tempDir/ltr-1_family-$idx.fa.refiner_cons!\n";
+    while ( <INREF> ) {
+      if ( /Final Multiple Alignment Size = (\d+)/ ) {
+        $maSize = $1;
+      }
+      else {
+        $cons .= $_;
+      }
+    }
+    close INREF;
+
+    # Clean up consensi starting/ending with Ns
+    #   - These are sections of the multiple alignment
+    #     where there is no support for a consensus.
+    $cons =~ s/^[Nn]*([^Nn].*[^Nn])[Nn]*$/$1/;
+    if ( -s "$tempDir/ltr-1_family-$idx.fa.refiner.stk" ) {
+      my $stockholmFile = SeedAlignmentCollection->new();
+      my $IN;
+      open $IN, "<$tempDir/ltr-1_family-$idx.fa.refiner.stk"
+          or die
+"Could not open $tempDir/ltr-1_family-$idx.fa.refiner.stk for reading!\n";
+      $stockholmFile->read_stockholm( $IN );
+      close $IN;
+
+      # File only contains one family
+      my $seedAlign = $stockholmFile->get( 0 );
+
+      # Add details to DE line
+      $seedAlign->setDescription( "RepeatModeler Generated - ltr-1"
+        . "_family-$idx, [ Type=$famType, Final Multiple Alignment Size = $maSize ]"
+      );
+
+      print OUTSTK "" . $seedAlign->toString();
+    }
+
+    # Save the consensus to the consensi file.
+    print OUTCON ">ltr-1_family-$idx [ Type=$famType, "
+        . "Final Multiple Alignment Size = "
+        . $maSize . " ]\n";
+    print OUTCON "$cons\n";
+  }
+}
+print "      : " . elapsedTime( "step" ) . "\n";
+close OUTCON;
+close OUTSTK;
+system( "cp $tempDir/families.fa $inputFile-ltrs.fa" )
+    if ( -s "$tempDir/families.fa" );
+system( "cp $tempDir/families.stk $inputFile-ltrs.stk" )
+    if ( -s "$tempDir/families.stk" );
+
+print "Program Time: " . elapsedTime( "runtime" ) . "\n";
+exit;
+
+
+
+sub runNinja {
+  my $binDir  = shift;
+  my $alnFile = shift;
+  my $outFile = shift;
+  my $threads = shift;
+  my $wrkDir  = shift;
+
+  die "LTRPipeline::runNinja : Could not find sequence input file $alnFile\n"
+      if ( !-s $alnFile );
+
+  # Create temporary directory
+  my $tmpDir;
+  if ( !defined $wrkDir || !-d $wrkDir ) {
+    $tmpDir = &createTempDir( [ dirname( $alnFile ), cwd() ], "NINJA" );
+  }
+  else {
+    $tmpDir = &createTempDir( [ $wrkDir ], "NINJA" );
+  }
+  print "LTRPipeline::runNinja : tmpdir = $tmpDir\n" if ( $DEBUG );
+
+  my $cmd =
+"$binDir/Ninja --in $alnFile --out $tmpDir/cluster.dat --out_type c --corr_type m --cluster_cutoff 0.2";
+  if ( defined $threads && $threads > 1 ) {
+    $cmd .= " --threads $threads";
+  }
+  $cmd .= " > $tmpDir/Ninja.log 2>&1";
+
+  print "LTRPipeline::runNinja : Running analysis $cmd\n" if ( $DEBUG );
+  system( $cmd);
+
+  if ( -s "$tmpDir/cluster.dat" ) {
+    system( "mv $tmpDir/cluster.dat $outFile" );
+  }
+
+  # TODO: Consider keeping on error
+  unless ( $DEBUG ) {
+    rmtree( $tmpDir );
+  }
+
+}
+
+sub runMafft {
+  my $binDir  = shift;
+  my $seqFile = shift;
+  my $outFile = shift;
+  my $threads = shift;
+  my $wrkDir  = shift;
+
+  die "LTRPipeline::runMafft : Could not find sequence input file $seqFile\n"
+      if ( !-s $seqFile );
+
+  # Create temporary directory
+  my $tmpDir;
+  if ( !defined $wrkDir || !-d $wrkDir ) {
+    $tmpDir = &createTempDir( [ dirname( $seqFile ), cwd() ], "MAFFT" );
+  }
+  else {
+    $tmpDir = &createTempDir( [ $wrkDir ], "MAFFT" );
+  }
+  $ENV{MAFFT_TMPDIR} = $tmpDir;
+  print "LTRPipeline::runMafft : tmpdir = $tmpDir\n" if ( $DEBUG );
+
+  my $cmd = "$binDir/mafft --large --quiet";
+  if ( defined $threads && $threads > 1 ) {
+    $cmd .= " --thread $threads";
+  }
+  $cmd .= " $seqFile > $tmpDir/mafft-alignment.fa";
+  print "LTRPipeline::runMafft : Running analysis $cmd\n" if ( $DEBUG );
+  system( $cmd);
+
+  if ( -s "$tmpDir/mafft-alignment.fa" ) {
+    system( "mv $tmpDir/mafft-alignment.fa $outFile" );
+  }
+
+  # TODO: Consider keeping on error
+  unless ( $DEBUG ) {
+    rmtree( $tmpDir );
+  }
+
+}
+
+sub elapsedTime {
+  my ( $TimeHistIdx ) = @_;
+  if ( defined $TimeBefore{$TimeHistIdx} ) {
+    my $DiffTime = time - $TimeBefore{$TimeHistIdx};
+    $TimeBefore{$TimeHistIdx} = time;
+    my $Min = int( $DiffTime / 60 );
+    $DiffTime -= $Min * 60;
+    my $Hours = int( $Min / 60 );
+    $Min -= $Hours * 60;
+    my $Sec = $DiffTime;
+    my $timeStr = sprintf( "%02d:%02d:%02d", $Hours, $Min, $Sec );
+    return "$timeStr (hh:mm:ss) Elapsed Time";
+  }
+  else {
+    $TimeBefore{$TimeHistIdx} = time;
+    return 0;
+  }
+}
+ 
+
+ sub createTempDir {
+  my $tmpPathRef = shift;
+  my $optPrefix  = shift;
+
+  ## Get date
+  my $date = localtime( time() );
+
+  # Windows does not support the use of ":" in a filename.
+  $date =~ s/[ ,\t,\n:]//g;
+
+  # Set optional prefix
+  my $prefix = "RM";
+  $prefix = $optPrefix if ( $optPrefix ne "" );
+
+  my $runnumber = "$$" . ".$date";
+  my $tempDir   = "";
+  foreach my $directory ( @{$tmpPathRef} ) {
+
+    if ( $directory =~ /\/$/ ) {
+      $tempDir = $directory . $prefix . "_$runnumber";
+    }
+    else {
+      $tempDir = $directory . "/$prefix" . "_$runnumber";
+    }
+
+    if ( -d "$tempDir" || mkdir $tempDir, 0777 ) {
+      if ( open( IN, ">$tempDir/deleteMe" ) ) {
+        close IN;
+        unlink( "$tempDir/deleteMe" );
+        last;
+      }
+    }
+    $tempDir = "";
+  }
+  return ( $tempDir );
+}
