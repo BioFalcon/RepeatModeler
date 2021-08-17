@@ -18,10 +18,13 @@ use SeedAlignmentCollection;
 my $ltrSeqLimit = 20000;
 my $threads = 64;
 my $tempDir ='LTR_73426.WedAug111617242021';
+my $inputFile="Rescued.fa";
 
 #load the paths to the software
 my $MAFFT_DIR         = "/opt/mafft/bin";
 my $NINJA_DIR         = "/opt/NINJA/NINJA";
+
+my %TimeBefore = ();
 
 elapsedTime( "step" );
 
