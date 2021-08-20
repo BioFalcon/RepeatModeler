@@ -42,7 +42,7 @@ This is the name that was provided to the BuildDatabase script
 using the "-name" option.
 
 =item -threads #
-Specify the number of threads for the clustering to run in. 
+Specify the number of threads for the clustering to run in.
 
 =item -LTROutput <LTRPipeline output dir>
 Directory where files (.fa and .stk) from the LTR pipeline are contained
@@ -105,7 +105,7 @@ use SimpleBatcher;
 use FastaDB;
 use Devel::Size qw(size total_size);
 
-#Fetch options 
+#Fetch options
 my @getopt_args = (
     '-version',                 # print out the version and exit
     '-help',
@@ -113,6 +113,19 @@ my @getopt_args = (
     '-RModOutput',
     '-threads'
 );
+
+push @getopt_args, RepModelConfig::getCommandLineOptions();
+
+# Get the supplied command line options, and set flags
+my %TimeBefore = ();
+my %options = ();
+Getopt::Long::config( "noignorecase", "bundling_override" );
+unless ( GetOptions( \%options, @getopt_args ) ) {
+  usage();
+}
+
+#Configuration Files
+my $CDHIT_DIR       = $config->{'CDHIT_DIR'}->{'value'};
 
 #Create tmpDir
 my $tmpDir = createTempDir("./","LTR_RMod_Merged",)
@@ -146,7 +159,7 @@ if ( -s "$tmpDir/cd-hit-out.clstr" ) {
     while ( <CDHitClusters> ) {
         if ( /^>Cluster/ ) {
             if ( @cluster > 1 ) {
-              #Keeping the ltr pipeline ID as the main ID 
+              #Keeping the ltr pipeline ID as the main ID
               if ( $longest_ltr_id ) {
                 foreach my $id ( @cluster ) {
                   # Now...remove only overlapping RECON/RepeatScout
@@ -231,7 +244,7 @@ if ( keys( %redundant_families ) ) {
         next;
         }
         $data .= $_;
-    }   
+    }
     if ( $data ) {
         if ( !exists $redundant_families{$id} ) {
             print OUT $data;
@@ -239,7 +252,7 @@ if ( keys( %redundant_families ) ) {
     }
     close IN;
     close OUT;
-        
+
     system("cp $options{'RModOutput'}/families.stk $tmpDir/families.stk.recon_rscout_only" );
     system("mv $tmpDir/combined.stk $tmpDir/families.stk.with_redundancy" );
     open IN, "<$tmpDir/families.stk.with_redundancy" or die "RepeatModeler: Could not open $tmpDir/families.stk.with_redundancy for reading";
