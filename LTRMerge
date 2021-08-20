@@ -1,0 +1,342 @@
+#!/usr/bin/perl
+##---------------------------------------------------------------------------##
+##  File:
+##      @(#) LTRMerge
+##  Author:
+##      Arian Smit <asmit@systemsbiology.org>
+##      Robert Hubley <rhubley@systemsbiology.org>
+##      Francisco Falcon <francisco.falcon[at]imp.ac.at>
+##  Description:
+##      This script aimns to combine the runs of the RepeatModeler main pipeline
+##      and the LTRpipeline.
+##
+#******************************************************************************
+#* Copyright (C) Institute for Systems Biology 2008-2019 Developed by
+#* Arian Smit and Robert Hubley.
+#*
+#* This work is licensed under the Open Source License v2.1.  To view a copy
+#* of this license, visit http://www.opensource.org/licenses/osl-2.1.php or
+#* see the license.txt file contained in this distribution.
+#*
+###############################################################################
+#
+#
+
+=head1 NAME
+LTRMerge - Merge results from RepeatModeler with LTRPipeline
+
+=head1 SYNOPSIS
+  LTRMerge [-options]
+
+=head1 DESCRIPTION
+The options are:
+
+=over 4
+
+=item -h(elp)
+Detailed help
+
+=item -database
+The name of the sequence database to run an analysis on.
+This is the name that was provided to the BuildDatabase script
+using the "-name" option.
+
+=item -threads #
+Specify the number of threads for the clustering to run in. 
+
+=item -LTROutput <LTRPipeline output dir>
+Directory where files (.fa and .stk) from the LTR pipeline are contained
+
+=item -RModOutput <Repeat Modeler output dir>
+Directory where files (.fa and .stk) from RepeatModeler are contained
+
+=back
+
+=head1 CONFIGURATION OVERRIDES
+
+=head1 SEE ALSO
+
+=over 4
+RepeatMasker, RMBlast
+
+=back
+
+=head1 COPYRIGHT
+ Copyright 2005-2019 Institute for Systems Biology
+
+=head1 AUTHOR
+ RepeatModeler:
+   Robert Hubley <rhubley@systemsbiology.org>
+   Arian Smit <asmit@systemsbiology.org>
+ LTR Pipeline Extensions:
+   Jullien Michelle Flynn <jmf422@cornell.edu>
+
+=cut
+
+# Module Dependence
+use strict;
+use FindBin;
+use lib $FindBin::RealBin;
+use Getopt::Long;
+use POSIX qw(:sys_wait_h ceil floor);
+use File::Copy;
+use File::Spec;
+use File::Path;
+use File::Basename;
+use Cwd qw(abs_path getcwd cwd);
+use Data::Dumper;
+use Pod::Text;
+use Time::HiRes qw( gettimeofday tv_interval);
+
+# RepeatModeler Libraries
+use RepModelConfig;
+use lib $RepModelConfig::configuration->{'REPEATMASKER_DIR'}->{'value'};
+use RepeatUtil;
+use SeedAlignment;
+use SeedAlignmentCollection;
+
+# RepeatMasker Libraries
+use SearchResult;
+use SearchResultCollection;
+use WUBlastSearchEngine;
+use NCBIBlastSearchEngine;
+use SeqDBI;
+use SimpleBatcher;
+use FastaDB;
+use Devel::Size qw(size total_size);
+
+#Fetch options 
+my @getopt_args = (
+    '-version',                 # print out the version and exit
+    '-help',
+    '-LTROutput',
+    '-RModOutput',
+    '-threads'
+);
+
+#Create tmpDir
+my $tmpDir = createTempDir("./","LTR_RMod_Merged",)
+
+# 1. Combine results from both pipelines into a file
+system("cat $options{'LTROutput'}/tmpInputSeq-ltrs.fa $options{'RModOutput'}/consensi.fa > $tmpDir/combined.fa" );
+system("cat $options{'LTROutput'}/tmpInputSeq-ltrs.stk $options{'RModOutput'}/families.stk > $tmpDir/combined.stk");
+
+# 2. Cluster results
+my $threads = $options{'threads'} ? $options{'threads'} : 1;
+my $cmd =
+    "$CDHIT_DIR/cd-hit-est -aS 0.8 -c 0.8 -g 1 -G 0 -A 80 -M 10000 "
+    . "-i $tmpDir/combined.fa -o $tmpDir/cd-hit-out -T $threads "
+    . "> $tmpDir/cd-hit-stdout 2>&1";
+system( $cmd);
+unlink( "$tmpDir/cd-hit-stdout" ) if ( -e "$tmpDir/cd-hit-stdout" );
+unlink( "$tmpDir/cd-hit-out" )    if ( -e "$tmpDir/cd-hit-out" );
+
+# 3. Process clusters and remove redundancy
+my %redundant_families;
+my %putative_subfamilies;
+my $ltrFamCnt = 0;
+my $rrFamCnt  = 0;
+if ( -s "$tmpDir/cd-hit-out.clstr" ) {
+    open CDHitClusters, "<$tmpDir/cd-hit-out.clstr" or die "RepeatModeler: Could not open $tmpDir/cd-hit-out.clstr for reading!\n";
+    my @cluster = ();
+    my $longest_ltr_id;
+    my $longest_ltr_size;
+    my $longest_rnd_id;
+    my $longest_rnd_size;
+    while ( <CDHitClusters> ) {
+        if ( /^>Cluster/ ) {
+            if ( @cluster > 1 ) {
+              #Keeping the ltr pipeline ID as the main ID 
+              if ( $longest_ltr_id ) {
+                foreach my $id ( @cluster ) {
+                  # Now...remove only overlapping RECON/RepeatScout
+                  # candidates ( rnd-#_family-# ).
+                  if ( $id !~ /^ltr-\d+_family-\d+/ ) {
+                    # Use the longest as the "reason" why we are removing it.
+                    #print "Removing $id because it's redundant with $longest_ltr_id\n";
+                    $redundant_families{$id}++;
+                  }
+                }
+              }
+              elsif ( $longest_rnd_id ) {
+                foreach my $id ( @cluster ) {
+                  if ( $id ne $longest_rnd_id ) {
+                   #print "Labeling $id as putative subfamily of $longest_rnd_id\n";
+                    $putative_subfamilies{$id} = $longest_rnd_id;
+                  }
+                }
+              }
+            }
+            $longest_ltr_id   = undef;
+            $longest_ltr_size = 0;
+            $longest_rnd_id   = undef;
+            $longest_rnd_size = 0;
+            @cluster          = ();
+            next;
+        }
+        if ( /^\d+\s+(\d+)nt,\s*>((rnd|ltr)-\d+_family-\d+)/ ) {
+            my $size = $1;
+            my $id   = $2;
+            my $type = $3;
+            if ( $type eq "ltr" ) {
+              $ltrFamCnt++;
+              if ( $size > $longest_ltr_size ) {
+                $longest_ltr_id   = $id;
+                $longest_ltr_size = $size;
+              }
+            }
+            if ( $type eq "rnd" ) {
+              $rrFamCnt++;
+              if ( $size > $longest_rnd_size ) {
+                $longest_rnd_id   = $id;
+                $longest_rnd_size = $size;
+              }
+            }
+            push @cluster, $id;
+        }
+    }
+    close IN;
+}
+
+print "       - $rrFamCnt RepeatScout/RECON families\n";
+print "       - $ltrFamCnt LTRPipeline families\n";
+if ( keys( %redundant_families ) ) {
+    system("cp $options{'RModOutput'}/consensi.fa $tmpDir/consensi.fa.recon_rscout_only" );
+    system("mv $tmpDir/combined.fa $tmpDir/consensi.fa.with_redundancy" );
+
+    # Filter consensi.fa and families.stk
+    open IN, "<$tmpDir/consensi.fa.with_redundancy" or die "RepeatModeler: Could not open $tmpDir/consensi.fa.with_redundancy for reading";
+    open OUT, ">$tmpDir/consensi.fa" or die "RepeatModeler: Could not open $tmpDir/consensi.fa for writing";
+    my $id;
+    my $data;
+    while ( <IN> ) {
+        if ( /^>(\S+)/ ) {
+        my $tmpID = $1;
+        if ( $data ) {
+            if ( !exists $redundant_families{$id} ) {
+            print OUT $data;
+            }
+        }
+        if ( exists $putative_subfamilies{$tmpID} ) {
+            my $tstr = $_;
+            $tstr =~ s/[\n\r]//g;
+            $data =
+                "$tstr [ putative subfamily of "
+                . $putative_subfamilies{$tmpID} . " ]\n";
+        }
+        else {
+            $data = $_;
+        }
+        $id = $tmpID;
+        next;
+        }
+        $data .= $_;
+    }   
+    if ( $data ) {
+        if ( !exists $redundant_families{$id} ) {
+            print OUT $data;
+        }
+    }
+    close IN;
+    close OUT;
+        
+    system("cp $options{'RModOutput'}/families.stk $tmpDir/families.stk.recon_rscout_only" );
+    system("mv $tmpDir/combined.stk $tmpDir/families.stk.with_redundancy" );
+    open IN, "<$tmpDir/families.stk.with_redundancy" or die "RepeatModeler: Could not open $tmpDir/families.stk.with_redundancy for reading";
+    open OUT, ">$tmpDir/families.stk" or die "RepeatModeler: Could not open $tmpDir/families.stk for writing";
+    $id   = "";
+    $data = "";
+    while ( <IN> ) {
+        if ( /^#=GF\s+ID\s+(\S+)/ ) {
+            $id = $1;
+        }
+        if ( /^#=GF\s+DE\s+(\S.*)/ ) {
+            if ( exists $putative_subfamilies{$id} ) {
+                my $tstr = $_;
+                $tstr =~ s/[\n\r]//g;
+                $data .=  "$tstr [ putative subfamily of ". $putative_subfamilies{$id} . " ]\n";
+            }
+            else {
+              $data .= $_;
+            }
+        } else {
+            $data .= $_;
+        }
+        if ( /^\/\// ) {
+            if ( !exists $redundant_families{$id} ) {
+                print OUT $data;
+            }
+            $data = "";
+        }
+    }
+    close IN;
+    close OUT;
+    print "       - Removed "
+        . scalar( keys( %redundant_families ) )
+        . " redundant LTR families.\n";
+    print "       - Final family count = "
+        . (
+        ( $rrFamCnt + $ltrFamCnt ) - scalar( keys( %redundant_families ) ) )
+        . "\n";
+}
+
+print "Merging Time: " . elapsedTime( 1 ) . "\n";
+
+
+
+############Subroutines
+
+sub elapsedTime {
+  my ( $TimeHistIdx ) = @_;
+  if ( defined $TimeBefore{$TimeHistIdx} ) {
+    my $DiffTime = time - $TimeBefore{$TimeHistIdx};
+    $TimeBefore{$TimeHistIdx} = time;
+    my $Min = int( $DiffTime / 60 );
+    $DiffTime -= $Min * 60;
+    my $Hours = int( $Min / 60 );
+    $Min -= $Hours * 60;
+    my $Sec = $DiffTime;
+    my $timeStr = sprintf( "%02d:%02d:%02d", $Hours, $Min, $Sec );
+    return "$timeStr (hh:mm:ss) Elapsed Time";
+  }
+  else {
+    $TimeBefore{$TimeHistIdx} = time;
+    return 0;
+  }
+}
+
+sub createTempDir {
+  my $tmpPathRef = shift;
+  my $optPrefix  = shift;
+
+  ## Get date
+  my $date = localtime( time() );
+
+  # Windows does not support the use of ":" in a filename.
+  $date =~ s/[ ,\t,\n:]//g;
+
+  # Set optional prefix
+  my $prefix = "RM";
+  $prefix = $optPrefix if ( $optPrefix ne "" );
+
+  my $runnumber = "$$" . ".$date";
+  my $tempDir   = "";
+  foreach my $directory ( @{$tmpPathRef} ) {
+    if ( $directory =~ /\/$/ ) {
+      $tempDir = $directory . $prefix . "_$runnumber";
+    }
+    else {
+      $tempDir = $directory . "/$prefix" . "_$runnumber";
+    }
+
+    if ( -d "$tempDir" || mkdir $tempDir, 0777 ) {
+      if ( open( IN, ">$tempDir/deleteMe" ) ) {
+        close IN;
+        unlink( "$tempDir/deleteMe" );
+        last;
+      }
+    }
+    $tempDir = "";
+  }
+  return ( $tempDir );
+}
