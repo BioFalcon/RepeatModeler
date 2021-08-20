@@ -125,6 +125,7 @@ unless ( GetOptions( \%options, @getopt_args ) ) {
 }
 
 #Configuration Files
+my $config           = $RepModelConfig::configuration;
 my $CDHIT_DIR       = $config->{'CDHIT_DIR'}->{'value'};
 
 #Create tmpDir
