@@ -129,7 +129,8 @@ my $config           = $RepModelConfig::configuration;
 my $CDHIT_DIR       = $config->{'CDHIT_DIR'}->{'value'};
 
 #Create tmpDir
-my $tmpDir = createTempDir(("/."),"LTR_RMod_Merged",);
+my @tmdDirPath=("/.");
+my $tmpDir = createTempDir(,"LTR_RMod_Merged",);
 
 # 1. Combine results from both pipelines into a file
 system("cat $options{'LTROutput'}/tmpInputSeq-ltrs.fa $options{'RModOutput'}/consensi.fa > $tmpDir/combined.fa" );
