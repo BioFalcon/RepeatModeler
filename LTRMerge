@@ -131,7 +131,7 @@ my $CDHIT_DIR       = $config->{'CDHIT_DIR'}->{'value'};
 
 #Create tmpDir
 my $tmpDir = strftime("%Y%m%d%H%M%S",localtime)."_LTRMerge";
-mkdir($tmpDIr,0777);
+mkdir($tmpDir,0777);
 
 # 1. Combine results from both pipelines into a file
 system("cat $options{'LTROutput'}/tmpInputSeq-ltrs.fa $options{'RModOutput'}/consensi.fa > $tmpDir/combined.fa" );
