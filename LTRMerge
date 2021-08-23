@@ -134,8 +134,8 @@ my $tmpDir = strftime("%Y%m%d%H%M%S",localtime)."_LTRMerge";
 mkdir($tmpDir,0777);
 
 # 1. Combine results from both pipelines into a file
-system("cat $options{'LTROutput'}/tmpInputSeq-ltrs.fa $options{'RModOutput'}/consensi.fa > $tmpDir/combined.fa" );
-system("cat $options{'LTROutput'}/tmpInputSeq-ltrs.stk $options{'RModOutput'}/families.stk > $tmpDir/combined.stk");
+system("cat ".$options{'LTROutput'}."/tmpInputSeq-ltrs.fa ".$options{'RModOutput'}."/consensi.fa > $tmpDir/combined.fa" );
+system("cat ".$options{'LTROutput'}."/tmpInputSeq-ltrs.stk ".$options{'RModOutput'}."/families.stk > $tmpDir/combined.stk");
 
 # 2. Cluster results
 my $threads = $options{'threads'} ? $options{'threads'} : 1;
