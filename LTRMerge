@@ -87,6 +87,7 @@ use Cwd qw(abs_path getcwd cwd);
 use Data::Dumper;
 use Pod::Text;
 use Time::HiRes qw( gettimeofday tv_interval);
+use POSIX qw(strftime);
 
 # RepeatModeler Libraries
 use RepModelConfig;
@@ -129,8 +130,8 @@ my $config           = $RepModelConfig::configuration;
 my $CDHIT_DIR       = $config->{'CDHIT_DIR'}->{'value'};
 
 #Create tmpDir
-my @tmdDirPath=("/.");
-my $tmpDir = createTempDir(@tmdDirPath,"LTR_RMod_Merged",);
+my $tmpDir = strftime("%Y%m%d%H%M%S",localtime)."_LTRMerge";
+mkdir($tmpDIr,0777);
 
 # 1. Combine results from both pipelines into a file
 system("cat $options{'LTROutput'}/tmpInputSeq-ltrs.fa $options{'RModOutput'}/consensi.fa > $tmpDir/combined.fa" );
@@ -326,6 +327,7 @@ sub createTempDir {
 
   ## Get date
   my $date = localtime( time() );
+ 
 
   # Windows does not support the use of ":" in a filename.
   $date =~ s/[ ,\t,\n:]//g;
