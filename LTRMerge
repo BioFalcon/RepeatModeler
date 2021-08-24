@@ -112,7 +112,7 @@ my @getopt_args = (
     '-help',
     '-LTROutput=s',
     '-RModOutput=s',
-    '-threads=i'
+    '-threads=s'
 );
 
 push @getopt_args, RepModelConfig::getCommandLineOptions();
