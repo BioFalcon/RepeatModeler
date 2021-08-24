@@ -110,9 +110,9 @@ use Devel::Size qw(size total_size);
 my @getopt_args = (
     '-version',                 # print out the version and exit
     '-help',
-    '-LTROutput',
-    '-RModOutput',
-    '-threads'
+    '-LTROutput=s',
+    '-RModOutput=s',
+    '-threads=i'
 );
 
 push @getopt_args, RepModelConfig::getCommandLineOptions();
