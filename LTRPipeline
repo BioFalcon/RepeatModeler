@@ -715,123 +715,137 @@ sub runLtrHarvest {
     my $seqio = Bio::SeqIO->new(-file => $full_seqFile, '-format' => 'Fasta');
 
     #Sequence counter, to know where to do each loop
-    my $seqCounter=0;
+    my $GlobalseqCounter=0;
+    my $RoundseqCounter=0;
+    my $NumberFile=1;
+
+    #Count number of bases for each file
+    my $FastaLength=0;
 
     #Count how many sequences are there in the file for the last loop
     my $fastaLen = `grep -c '>' $full_seqFile`;
-    my $Last     = 0;
+
+    #Hash to store all the files and the number of sequences they contain 
+    my %FastaFiles;
+
+    #Open the first file
+    my $LTRH_TempFasta="ChunkFasta_".$NumberFile.".fa";
+    open (tempFile_LTRH,'>',$LTRH_TempFasta);
 
     #Set chunk size for fasta split
-    my $chunkSize = 1000;
+    my $chunkSize = 100000000;
+    $chunkSize=20;
 
-    #Create first file before the loop
-    my $CurrentTempFasta="temp1_".$chunkSize.".fa";
-    open (tempFile_LTRH,'>',$CurrentTempFasta);
+    #Open File for first iteration
+    $seqout= Bio::SeqIO->new( -format => 'Fasta', -file => '>output.fa');
 
-    #Hash to store the fasta files for parallel run
-    my %FastaFiles = ($seqCounter => [($seqCounter,$CurrentTempFasta,$chunkSize)] );
-
-    #Loop through the fasta file seq by seq, creating shorter fasta files
-    print('LTRPipeline::runLtrHarvest Creating shorted fasta files...');
+    #Save files in hash
     while(my $seq = $seqio->next_seq) {
-        #Read and store each sequence until it reaches 1000
-        my $SeqID = $seq->id;
-        my $SeqSeq= join("\n", unpack('(A80)*',$seq->seq));
+        $GlobalseqCounter +=1;
+        $RoundseqCounter  +=1;
+        $FastaLength      +=$seq->length();
+        my $SeqID =$seq->id;
+        my $SeqSeq= join("\n", unpack('(A60)*',$seq->seq));
         print tempFile_LTRH ">".$SeqID."\n".$SeqSeq."\n";
-        $seqCounter +=1;
-        if (int($seqCounter % $chunkSize)==0 and $Last ==0){
-            if ($seqCounter+$chunkSize >= $fastaLen){
-                $Last=1;
-                $chunkSize=$fastaLen % $chunkSize;
-            }
-            my $CurrentTempFasta ="temp".($seqCounter+1)."_".($seqCounter+$chunkSize).".fa";
-            $FastaFiles{$seqCounter}=[($seqCounter,$CurrentTempFasta,$chunkSize)];
-            open (tempFile_LTRH,'>',$CurrentTempFasta);
-        }
-        if ($seqCounter == $fastaLen){
+        if ($FastaLength > $chunkSize & $GlobalseqCounter != $fastaLen){
+            $FastaFiles{$NumberFile}=[($LTRH_TempFasta,$GlobalseqCounter-$RoundseqCounter,$FastaLength)];
+            $NumberFile+=1;
+            $FastaLength=0;
+            $RoundseqCounter=0;
+            $LTRH_TempFasta="ChunkFasta_".$NumberFile.".fa";
             close(tempFile_LTRH);
-            last;
-        };
+            open (tempFile_LTRH,'>',$LTRH_TempFasta);
+        }
+        if ($GlobalseqCounter == $fastaLen){
+            $FastaFiles{$NumberFile}=[($LTRH_TempFasta,$GlobalseqCounter-$RoundseqCounter,$FastaLength)];
+            close(tempFile_LTRH);
+        }
     }
-    print("DONE\n\n");
-    print("LTRPipeline::runLtrHarvest Original fasta was split into ".(keys %FastaFiles)." parts\n\n");
 
     #Initialize parallelfork manager
     my $manager_LTRHarvest = Parallel::ForkManager->new($threads);
 
-    #Do the loop with forks
     for my $keys (keys %FastaFiles){
+        #Do the fork
         $manager_LTRHarvest->start and next;
 
-        #Get the starting number to printout
-        my $SeqRangeEnd=$FastaFiles{$keys}[0]+$FastaFiles{$keys}[2];
-        print("LTRPipeline::runLtrHarvest Analysing sequences $FastaFiles{$keys}[0]-$SeqRangeEnd...\n");
-        
+        #Printout the starting message
+        print("LTRPipeline::runLtrHarvest Analysing Chunk Number ${keys}, containing $FastaFiles{$keys}[2]bp...\n");
+
         #Run suffixerator
-        my $cmd = "$binDir/gt suffixerator -db $FastaFiles{$keys}[1] -indexname $FastaFiles{$keys}[1]_index -tis -suf -lcp -des -ssp -sds -dna > $FastaFiles{$keys}[1]_suffixerator.log 2>&1";
+        my $SeqRangeEnd=$FastaFiles{$keys}[0]+$FastaFiles{$keys}[2];
+
+        #Check if suffixerator worked
+        #my $cmd = "$binDir/gt suffixerator -db $FastaFiles{$keys}[0] -indexname $FastaFiles{$keys}[0]_index -tis -suf -lcp -des -ssp -sds -dna > $FastaFiles{$keys}[0]_suffixerator.log 2>&1";
+        my $cmd = "gt suffixerator -db $FastaFiles{$keys}[0] -indexname Suffixerator${keys}_index -tis -suf -lcp -des -ssp -sds -dna > Suffixerator.${keys}.log 2>&1";
         my $retCode = system( $cmd);
 
         #Check if suffixerator worked
-        if ( $retCode != 0 ) {
-            warn "LtrPipeline: GenomeTools failed to build suffixtree datastructure.  This is frequently\n". "             caused by a lack of disk space. Error code: " . ( $? >> 8 ) . "\n";
-            $errorFlag = 1;
-        }
+            if ( $retCode != 0 ) {
+                warn "LTRPipeline: GenomeTools failed to build suffixtree datastructure.  This is frequently\n". "             caused by a lack of disk space. Error code: " . ( $? >> 8 ) . "\n";
+                $errorFlag = 1;
+            }
 
-        #Run ltrharvest
-        $cmd = "$binDir/gt ltrharvest -index $FastaFiles{$keys}[1]_index -out ltrharvest_$FastaFiles{$keys}[0].out > ltrharvest_$FastaFiles{$keys}[1].log 2>&1";
+        #Run LTRHarvest 
+        #$cmd = "$binDir/gt ltrharvest -index $FastaFiles{$keys}[0]_index -out ltrharvest_$FastaFiles{$keys}[0].out > ltrharvest_$FastaFiles{$keys}[0].log 2>&1";
+        $cmd = "gt ltrharvest -index Suffixerator${keys}_index -out LTRHarvest_${keys}_run.out > LTRHarvest_${keys}.log 2>&1";
         $retCode = system( $cmd);
 
-        #Check if ltrharvest worked
+        #Check if LTRHarvest finished correctly
         if  ( $retCode != 0 ) {
-            warn "LtrPipeline: GenomeTools failed to run ltrharvest. Error code: " . ( $? >> 8 ) . "\n";
-            $errorFlag = 1;
-        }
+                warn "LtrPipeline: GenomeTools failed to run ltrharvest. Error code: " . ( $? >> 8 ) . "\n";
+                $errorFlag = 1;
+            }
 
         #Fix the results, changing the last number
-        print("LTRPipeline::runLtrHarvest Fixing results $FastaFiles{$keys}[0]-$SeqRangeEnd...\n");
-        open(ltrHarvest_out, '<', "ltrharvest_".$FastaFiles{$keys}[1].".log");
-        open(ltrHarvest_outFix,'>',"ltrharvest_".$FastaFiles{$keys}[1].".Fixed.log");
+        print("LTRPipeline::runLtrHarvest Fixing results of Chunk Number ${keys}...\n");
+        open(ltrHarvest_out, '<', "LTRHarvest_".$keys.".log");
+        open(ltrHarvest_outFix,'>',"LTRHarvest".$keys.".out");
         while(<ltrHarvest_out>){
             if (/^#/){
                 print ltrHarvest_outFix $_;
             }else{
             my @LTRHarvRes = split('  ',$_);
-            $LTRHarvRes[$#LTRHarvRes]=$FastaFiles{$keys}[0]+$LTRHarvRes[$#LTRHarvRes];
+            $LTRHarvRes[$#LTRHarvRes]+=$FastaFiles{$keys}[1];
             my $LTRHarvFix = join("  ",@LTRHarvRes); 
                 print ltrHarvest_outFix $LTRHarvFix."\n";
             }
         }
+
+        #Cleanup :(
+        print("LTRPipeline::Cleaning up intermediate files for Chunk Number ${keys}...\n");
+        $cmd = ("rm $FastaFiles{$keys}[0] Suffixerator${keys}_index* LTRHarvest_${keys}_run.out");
+        $retCode = system( $cmd);
         $manager_LTRHarvest->finish;
-    }
+    } 
     $manager_LTRHarvest->wait_all_children;
 
     #Change to original directory
     chdir( $origDir );
-    
-    #Merge the results
-    print("LTRPipeline::runLtrHarvest Merging Results...");
-    my $Header=0;
-    open (OutputFinal_LTRHarvest,'>',$outFile);
-    my @LTR_FinalOutputs=glob("$tmpDir/ltrharvest*Fixed.log");
 
-    foreach(@LTR_FinalOutputs){
-        open(CurrentLogFile, '<', $_);
-        while(<CurrentLogFile>){
-            if ($_ =~ /^#/ and $Header == 0){
-                print OutputFinal_LTRHarvest "$_";
-            }elsif ($_ !~ /^#/ ){
+    #Open Final Output
+    open (OutputFinal_LTRHarvest,'>',$outFile);
+
+    #Create Header from the first file
+    open(ltrHarvest_out, '<', "$tmpDir/LTRHarvest1.out");
+    while(<ltrHarvest_out>){
+        if (/^#/){
+            print OutputFinal_LTRHarvest "$_";
+        }
+    }
+
+    #Merge Files
+    for my $keys (sort keys %FastaFiles){
+        open(ltrHarvest_out, '<', "$tmpDir/LTRHarvest".$keys.".out");
+        while(<ltrHarvest_out>){
+            if (!/^#/){
                 print OutputFinal_LTRHarvest "$_";
             }
         }
-        $Header=1;
     }
-    #Sort the results 
-    my $cmd="sed 's/  /\t/g' $outFile | sort -k11,11n --parallel=$threads | sed 's/\t/  /g' >temp_SortedLTRHarv.txt && mv temp_SortedLTRHarv.txt $outFile";
-    my $retCode = system( $cmd);
-    print("DONE\n");
+
+    print("LTRPipeline::LTRHarvest Done\n");
 }
-
-
 sub runLtrDetector {
   my $binDir  = shift;
   my $seqFile = shift;
