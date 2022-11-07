@@ -734,10 +734,6 @@ sub runLtrHarvest {
 
     #Set chunk size for fasta split
     my $chunkSize = 100000000;
-    $chunkSize=20;
-
-    #Open File for first iteration
-    $seqout= Bio::SeqIO->new( -format => 'Fasta', -file => '>output.fa');
 
     #Save files in hash
     while(my $seq = $seqio->next_seq) {
