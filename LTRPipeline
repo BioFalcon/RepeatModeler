@@ -772,8 +772,7 @@ sub runLtrHarvest {
         my $SeqRangeEnd=$FastaFiles{$keys}[0]+$FastaFiles{$keys}[2];
 
         #Check if suffixerator worked
-        #my $cmd = "$binDir/gt suffixerator -db $FastaFiles{$keys}[0] -indexname $FastaFiles{$keys}[0]_index -tis -suf -lcp -des -ssp -sds -dna > $FastaFiles{$keys}[0]_suffixerator.log 2>&1";
-        my $cmd = "gt suffixerator -db $FastaFiles{$keys}[0] -indexname Suffixerator${keys}_index -tis -suf -lcp -des -ssp -sds -dna > Suffixerator.${keys}.log 2>&1";
+        my $cmd = "$binDir/gt suffixerator -db $FastaFiles{$keys}[0] -indexname Suffixerator${keys}_index -tis -suf -lcp -des -ssp -sds -dna > Suffixerator.${keys}.log 2>&1";
         my $retCode = system( $cmd);
 
         #Check if suffixerator worked
@@ -783,8 +782,7 @@ sub runLtrHarvest {
             }
 
         #Run LTRHarvest 
-        #$cmd = "$binDir/gt ltrharvest -index $FastaFiles{$keys}[0]_index -out ltrharvest_$FastaFiles{$keys}[0].out > ltrharvest_$FastaFiles{$keys}[0].log 2>&1";
-        $cmd = "gt ltrharvest -index Suffixerator${keys}_index -out LTRHarvest_${keys}_run.out > LTRHarvest_${keys}.log 2>&1";
+        $cmd = "$binDir/gt ltrharvest -index Suffixerator${keys}_index -out LTRHarvest_${keys}_run.out > LTRHarvest_${keys}.log 2>&1";
         $retCode = system( $cmd);
 
         #Check if LTRHarvest finished correctly
