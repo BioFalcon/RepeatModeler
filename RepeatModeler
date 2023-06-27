@@ -201,6 +201,7 @@ my @getopt_args = (
                     '-onlyIns',                     # For internal use only
                     '-recon_batch_size=i',          # For debugging only 
                     '-recon_sample_size_start=i',   # For debugging only
+	            '-genomeSampleSizeMultiplier=i',  # To manipulate samplig sizes  
 );
 
 # Add configuration parameters as additional command-line options
@@ -440,6 +441,7 @@ $genomeSampleSizeMax = $options{'genomeSampleSizeMax'}
     if ( $options{'genomeSampleSizeMax'} );
 $fragmentSize = $options{'recon_batch_size'} if ( exists $options{'recon_batch_size'} );
 $reconSampleSizeStart = $options{'recon_sample_size_start'} if ( exists $options{'recon_sample_size_start'} );
+$genomeSampleSizeMultiplier = $options{'genomeSampleSizeMultiplier'} if ( exists $options{'genomeSampleSizeMultiplier'});
 
 # Feature On Hold : We need a system that takes into
 #   account genome size, false positive rate of each
