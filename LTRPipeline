@@ -84,6 +84,8 @@ use lib $FindBin::RealBin;
 use RepModelConfig;
 use SeedAlignment;
 use SeedAlignmentCollection;
+use Bio::SeqIO;
+use Parallel::ForkManager;
 
 #
 # Magic numbers/constants here
