@@ -867,7 +867,7 @@ while ( 1 ) {
        || (
             !$options{'onlyIns'}
             && (    $totSampledBP >= $dbSize
-                 || ( $sampleSize >= $genomeSampleSizeMax && $numAdditionalRounds <= 0 )
+                 || ( $sampleSize >= $genomeSampleSizeMax && $numAdditionalRounds <= 0 && !exists $options{'targetSamplingSize'} )
                  || $seqRemaining < $fragmentSize
                  || ( exists $options{'targetSamplingSize'} && $targetSamplingSize <= $totSampledBP ) 
                )
@@ -1433,9 +1433,9 @@ while ( 1 ) {
   }
   else {
     if (    $totSampledBP >= $dbSize
-         || ( $sampleSize >= $genomeSampleSizeMax && $numAdditionalRounds <= 0 )
+         || ( $sampleSize >= $genomeSampleSizeMax && $numAdditionalRounds <= 0 && !exists $options{'targetSamplingSize'} )
          || $seqRemaining < $fragmentSize 
-         || (exists $options{'targetSamplingSize'} && $targetSamplingSize <= $totSampledBP)
+         || ( exists $options{'targetSamplingSize'} && $targetSamplingSize <= $totSampledBP )
        )
     {
       last;
