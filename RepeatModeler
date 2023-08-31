@@ -201,7 +201,8 @@ my @getopt_args = (
                     '-onlyIns',                     # For internal use only
                     '-recon_batch_size=i',          # For debugging only 
                     '-recon_sample_size_start=i',   # For debugging only
-	            '-genomeSampleSizeMultiplier=i',  # To manipulate samplig sizes  
+	                  '-genomeSampleSizeMultiplier=i',# To manipulate samplig sizes
+                    '-targetSamplingSize=i',        # Additional parameter for RepeatModeler
 );
 
 # Add configuration parameters as additional command-line options
@@ -325,6 +326,14 @@ if ( ! exists $options{'threads'} || $options{'threads'} < 2 ) {
         "         purposes the program should run with greater than eight\n" .
         "         threads (-threads #).\n\n";
 }
+
+##Not to mix up Additional Rounds and new Parameters
+if ( exists $options{'numAddlRounds'} && exists $options{'targetSamplingSize'} ){
+  die "\nERROR: Both -numAddlRounds and -targetSamplingSize have been defined,\n".
+      "         however only one of these parameters needs to be provided. Please remove\n".
+      "         one of them before continuing."
+}
+
 # Make it easier to pass to functions
 my $threads = $options{'threads'} ? $options{'threads'} : 1;
 
@@ -393,6 +402,10 @@ my $numAdditionalRounds;           # Number of additional rounds at
 my $recommendedFamilySize;         # RECON/RS family size minimum
                                    #   needed to build a family.
 
+my $targetSamplingSize;            #Size of the target to be sampled,
+                                   #program will stop after reaching this value.
+                                  
+
 if ( $options{'quick'} ) {
   # Pre-RepeatModeler 2.0.4 Sampling Strategy  
   #   RepeatScout Round 1: 40MB
@@ -440,8 +453,12 @@ $rsSampleSize = $options{'rsSampleSize'} if ( $options{'rsSampleSize'} );
 $genomeSampleSizeMax = $options{'genomeSampleSizeMax'}
     if ( $options{'genomeSampleSizeMax'} );
 $fragmentSize = $options{'recon_batch_size'} if ( exists $options{'recon_batch_size'} );
-$reconSampleSizeStart = $options{'recon_sample_size_start'} if ( exists $options{'recon_sample_size_start'} );
-$genomeSampleSizeMultiplier = $options{'genomeSampleSizeMultiplier'} if ( exists $options{'genomeSampleSizeMultiplier'});
+$reconSampleSizeStart = $options{'recon_sample_size_start'} 
+    if ( exists $options{'recon_sample_size_start'} );
+$genomeSampleSizeMultiplier = $options{'genomeSampleSizeMultiplier'} 
+    if ( exists $options{'genomeSampleSizeMultiplier'});
+$targetSamplingSize = $options{'targetSamplingSize'} 
+    if ( exists $options{'targetSamplingSize'} );
 
 # Feature On Hold : We need a system that takes into
 #   account genome size, false positive rate of each
@@ -674,17 +691,17 @@ if ( $options{'recoverDir'} && -d $options{'recoverDir'} ) {
     }
   }
 
-  if ( $highestGoodRound <= 1 ) {
-    print "\n\nOops...the $recoverDir run did not get passed round-1.\n"
-        . "It makes more sense to restart this run from the beginning.\n"
-        . "Remove the -recoverDir option and rerun the program.\n\n";
-    exit;
-  }
+ # if ( $highestGoodRound <= 1 ) {
+ #   print "\n\nOops...the $recoverDir run did not get passed round-1.\n"
+ #       . "It makes more sense to restart this run from the beginning.\n"
+ #       . "Remove the -recoverDir option and rerun the program.\n\n";
+ #   exit;
+ # }
 
   my $badRound    = ( $highestGoodRound + 1 );
   my $badRoundDir = "$recoverDir/round-$badRound";
 
-  if ( !-d $badRoundDir ) {
+  if ( !-d $badRoundDir && $highestGoodRound >= 1 ) {
     print "\n\nThis directory ( $recoverDir )\n"
         . "appears to contain a successful run of RepeatModeler.  If this\n"
         . "is not the case, please report this as a bug at the RepeatMasker\n"
@@ -716,35 +733,37 @@ if ( $options{'recoverDir'} && -d $options{'recoverDir'} ) {
   print "  - Backing up previous $recoverDir/round-$badRound" . " directory.\n";
 
   # Move bad directory aside
-  my $i = 1;
-  while ( -d "$recoverDir/round-$badRound.backup_$i" && $i < 100 ) {
-    $i++;
-  }
-  if ( !-d "$recoverDir/round-$badRound.backup_$i" ) {
-    system(
-       "mv $recoverDir/round-$badRound $recoverDir/round-$badRound.backup_$i" );
-  }
-  else {
-    die "Something went wrong while trying to backup:\n"
-        . "       $recoverDir/round-$badRound\n";
-  }
-
-  print "  - Recalculating sample size...( please be patient )\n";
-
-  # Recalculate totSampledBP
-  $totSampledBP = 0;
-  my $startIdx = 1;
-  $startIdx = 2 if ( $options{'skipRS'} );
-  for ( my $i = $startIdx ; $i <= $highestGoodRound ; $i++ ) {
-
-    # Open up sampleDB-$i.fa with FastaDB and count bases
-    my $sDB = FastaDB->new( fileName => "$recoverDir/round-$i/sampleDB-$i.fa",
-                            openMode => SeqDBI::ReadOnly );
-
-    foreach my $seqID ( $sDB->getIDs() ) {
-      $totSampledBP += $sDB->getSeqLength( $seqID );
+  if ( $highestGoodRound >= 1) {
+    my $i = 1;
+    while ( -d "$recoverDir/round-$badRound.backup_$i" && $i < 100 ) {
+      $i++;
     }
-    undef $sDB;
+    if ( !-d "$recoverDir/round-$badRound.backup_$i" ) {
+      system(
+        "mv $recoverDir/round-$badRound $recoverDir/round-$badRound.backup_$i" );
+    }
+    else {
+      die "Something went wrong while trying to backup:\n"
+          . "       $recoverDir/round-$badRound\n";
+    }
+  
+    print "  - Recalculating sample size...( please be patient )\n";
+
+    # Recalculate totSampledBP
+    $totSampledBP = 0;
+    my $startIdx = 1;
+    $startIdx = 2 if ( $options{'skipRS'} );
+    for ( my $i = $startIdx ; $i <= $highestGoodRound ; $i++ ) {
+
+      # Open up sampleDB-$i.fa with FastaDB and count bases
+      my $sDB = FastaDB->new( fileName => "$recoverDir/round-$i/sampleDB-$i.fa",
+                              openMode => SeqDBI::ReadOnly );
+
+      foreach my $seqID ( $sDB->getIDs() ) {
+        $totSampledBP += $sDB->getSeqLength( $seqID );
+      }
+      undef $sDB;
+    }
   }
 
   # Set round number
@@ -849,7 +868,9 @@ while ( 1 ) {
             !$options{'onlyIns'}
             && (    $totSampledBP >= $dbSize
                  || ( $sampleSize >= $genomeSampleSizeMax && $numAdditionalRounds <= 0 )
-                 || $seqRemaining < $fragmentSize )
+                 || $seqRemaining < $fragmentSize
+                 || ( exists $options{'targetSamplingSize'} && $targetSamplingSize <= $totSampledBP ) 
+               )
        )
       )
   {
@@ -1413,7 +1434,9 @@ while ( 1 ) {
   else {
     if (    $totSampledBP >= $dbSize
          || ( $sampleSize >= $genomeSampleSizeMax && $numAdditionalRounds <= 0 )
-         || $seqRemaining < $fragmentSize )
+         || $seqRemaining < $fragmentSize 
+         || (exists $options{'targetSamplingSize'} && $targetSamplingSize <= $totSampledBP)
+       )
     {
       last;
     }
