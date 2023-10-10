@@ -331,7 +331,7 @@ if ( ! exists $options{'threads'} || $options{'threads'} < 2 ) {
 if ( exists $options{'numAddlRounds'} && exists $options{'targetSamplingSize'} ){
   die "\nERROR: Both -numAddlRounds and -targetSamplingSize have been defined,\n".
       "         however only one of these parameters needs to be provided. Please remove\n".
-      "         one of them before continuing."
+      "         one of them before continuing.\n\n"
 }
 
 # Make it easier to pass to functions
@@ -1435,7 +1435,6 @@ while ( 1 ) {
     if (    $totSampledBP >= $dbSize
          || ( $sampleSize >= $genomeSampleSizeMax && $numAdditionalRounds <= 0 && !exists $options{'targetSamplingSize'} )
          || $seqRemaining < $fragmentSize 
-         || ( exists $options{'targetSamplingSize'} && $targetSamplingSize <= $totSampledBP )
        )
     {
       last;
