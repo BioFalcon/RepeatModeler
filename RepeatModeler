@@ -1435,6 +1435,7 @@ while ( 1 ) {
     if (    $totSampledBP >= $dbSize
          || ( $sampleSize >= $genomeSampleSizeMax && $numAdditionalRounds <= 0 && !exists $options{'targetSamplingSize'} )
          || $seqRemaining < $fragmentSize 
+         || ( exists $options{'targetSamplingSize'} && $targetSamplingSize <= $totSampledBP ) 
        )
     {
       last;
