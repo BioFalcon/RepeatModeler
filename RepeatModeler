@@ -697,6 +697,8 @@ if ( $options{'recoverDir'} && -d $options{'recoverDir'} ) {
  #       . "Remove the -recoverDir option and rerun the program.\n\n";
  #   exit;
  # }
+  #Change sampleSize after round 2
+  $sampleSize = $reconSampleSizeStart; if ($highestGoodRound > 1);
 
   my $badRound    = ( $highestGoodRound + 1 );
   my $badRoundDir = "$recoverDir/round-$badRound";
@@ -768,9 +770,6 @@ if ( $options{'recoverDir'} && -d $options{'recoverDir'} ) {
 
   # Set round number
   $round = $highestGoodRound + 1;
-
-  #Change sampleSize after round 2
-  $sampleSize = $reconSampleSizeStart; if ($badRound > 1);
 
   # Adjust sample size
   #   - Only starts increasing for RECON after round 2
