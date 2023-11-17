@@ -769,6 +769,9 @@ if ( $options{'recoverDir'} && -d $options{'recoverDir'} ) {
   # Set round number
   $round = $highestGoodRound + 1;
 
+  #Change sampleSize after round 2
+  $sampleSize = $reconSampleSizeStart; if ($badRound > 1);
+
   # Adjust sample size
   #   - Only starts increasing for RECON after round 2
   for ( my $i = 2 ; $i < $badRound ; $i++ ) {
