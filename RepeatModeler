@@ -682,7 +682,8 @@ if ( $options{'recoverDir'} && -d $options{'recoverDir'} ) {
       {
         $highestGoodRound = $i;
       }
-      else {
+      #Change the stop, since round 2 often doesnt include any families
+      if ( !-d "$recoverDir/round-$i" ) {
         last;
       }
     }
@@ -733,20 +734,23 @@ if ( $options{'recoverDir'} && -d $options{'recoverDir'} ) {
   print "  - Backing up previous $recoverDir/round-$badRound" . " directory.\n";
 
   # Move bad directory aside
+  #Account for multiple directories
   if ( $highestGoodRound >= 1) {
-    my $i = 1;
-    while ( -d "$recoverDir/round-$badRound.backup_$i" && $i < 100 ) {
-      $i++;
-    }
-    if ( !-d "$recoverDir/round-$badRound.backup_$i" ) {
-      system(
-        "mv $recoverDir/round-$badRound $recoverDir/round-$badRound.backup_$i" );
-    }
-    else {
-      die "Something went wrong while trying to backup:\n"
-          . "       $recoverDir/round-$badRound\n";
-    }
-  
+    while (-d "$recoverDir/round-$badRound"){
+      my $i = 1;
+      while ( -d "$recoverDir/round-$badRound.backup_$i" && $i < 100 ) {
+        $i++;
+      }
+      if ( !-d "$recoverDir/round-$badRound.backup_$i" ) {
+        system(
+          "mv $recoverDir/round-$badRound $recoverDir/round-$badRound.backup_$i" );
+      }
+      else {
+        die "Something went wrong while trying to backup:\n"
+            . "       $recoverDir/round-$badRound\n";
+      }
+      $badRound++;
+    }  
     print "  - Recalculating sample size...( please be patient )\n";
 
     # Recalculate totSampledBP
