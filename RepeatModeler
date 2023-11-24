@@ -779,7 +779,7 @@ if ( $options{'recoverDir'} && -d $options{'recoverDir'} ) {
   }
   # Adjust sample size
   #   - Only starts increasing for RECON after round 2
-  for ( my $i = 2 ; $i < $badRound ; $i++ ) {
+  for ( my $i = 3 ; $i < $badRound ; $i++ ) {
     $sampleSize *= $genomeSampleSizeMultiplier;
   }
   $sampleSize = $genomeSampleSizeMax
