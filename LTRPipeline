@@ -251,7 +251,7 @@ print "     : " . elapsedTime( "step" ) . "\n";
 # Postprocess results using LTR_Retriever
 elapsedTime( "step" );
 print "Running Ltr_retriever...";
-&runLtrRetriever(
+my $ltrCount = &runLtrRetriever(
                   $LTR_RETRIEVER_DIR,
                   $inputFile,
                   "$tempDir/raw-struct-results.txt",
@@ -259,7 +259,7 @@ print "Running Ltr_retriever...";
                   $threads,
                   $ltrSeqLimit
 );
-if ( !-s "$tempDir/LtrRetriever-redundant-results.fa" ) {
+if ( $ltrCount == 0 || ! -s "$tempDir/LtrRetriever-redundant-results.fa" ) {
   print "LTRPipeline: No results after LTR_Retriever filtering.\n";
   exit;
 }
@@ -399,7 +399,7 @@ foreach my $cluster ( sort keys %clusters ) {
   my $additionalOpts = "";
   $additionalOpts .= "-giToID " . $options{'giToID'} if ( $options{'giToID'} );
   my $cmd =
-"$FindBin::RealBin/Refiner -noTmp $additionalOpts -name ltr-1_family-$idx $tempDir/ltr-1_family-$idx.fa";
+"$FindBin::RealBin/Refiner $additionalOpts -name ltr-1_family-$idx $tempDir/ltr-1_family-$idx.fa";
   $cmd .= " -quiet" unless ( $DEBUG );
   print "LTRPipeline: Running $cmd\n" if ( $DEBUG );
   system( $cmd );
@@ -596,15 +596,36 @@ sub runLtrRetriever {
   }
   print "LTRPipeline::runLtrRetriever : tmpdir = $tmpDir\n" if ( $DEBUG );
 
+  # 7/15/24: LTR_retriever will rename sequence identifiers >13 characters
+  #          long but does not restore these names in the output. In order
+  #          to fix this we will rename the identifiers and restore them
+  #          outside the call to LTR_retriever
   # Create a symlink inside the temp directory called "seq.fa" pointing
   # to the sequence file ( using full path ).  LTR_retriever creates
   # a prodigous amount of temporary files and output files in the same
   # directory as the sequence file.  This ensures they all get created
   # inside the temporary directory.
-  my $full_seqFile = File::Spec->rel2abs( $seqFile );
-  symlink( $full_seqFile, "$tmpDir/seq.fa" );
+  #my $full_seqFile = File::Spec->rel2abs( $seqFile );
+  #symlink( $full_seqFile, "$tmpDir/seq.fa" );
+  open IN, "<$seqFile" or die "LTRPipeline::runLtrRetriever : Could not open $seqFile for reading!";
+  open OUT, ">$tmpDir/seq.fa" or die "LTRPipeline::runLtrRetriever : Could not open $tmpDir/seq.fa for writing!";
+  my $seqIdx = 0;
+  my %seqIDMap = ();
+  while ( <IN> ) {
+    if ( /^>(\S+)/ ) {
+      $seqIdx++;
+      $seqIDMap{"seq".$seqIdx} = $1;
+      print OUT ">seq$seqIdx\n";
+    }else {
+      print OUT $_;
+    }
+  }
+  close IN;
+  close OUT;
+
   my $full_annotFile = File::Spec->rel2abs( $annotFile );
-  # NOTE: in LTR_retriever 2.9.0 trf_path is not the path
+
+  # NOTE: in LTR_retriever 3.0.0 trf_path is not the path
   #       to the directory containing the binary but rather 
   #       the full path to the binary itself.
   my $cmd            = "cd $tmpDir; $binDir/LTR_retriever " .
@@ -625,8 +646,23 @@ sub runLtrRetriever {
       or die
 "LTRPipeline::runLtrRetriever : Could not change directory back to $cwd : $!";
 
+  # Check for return status
+  if ( -s "$tmpDir/LTR_retriever.log" ) {
+    open IN, "<$tmpDir/LTR_retriever.log"
+        or die;
+    while(<IN>) {
+      if ( /No LTR-RT was found in your data./ ) {
+        # No LTR-RT was found so return 0
+        rmtree($tmpDir) unless ( $DEBUG );
+        unlink( "$tmpDir/seq.fa" );
+        return 0;
+      }
+    }
+    close IN;
+  }
+
+  my $error = 0;
   my $redundantLibFile = "";
-  my $error            = 0;
   if ( -s "$tmpDir/seq.fa.LTRlib.redundant.fa" ) {
     $redundantLibFile = "$tmpDir/seq.fa.LTRlib.redundant.fa";
   }
@@ -634,7 +670,6 @@ sub runLtrRetriever {
     $redundantLibFile = "$tmpDir/seq.fa.mod.LTRlib.redundant.fa";
   }
   else {
-    #print "\nERROR: LTRPipeline::runLtrRetriever : Could not locate redundant library in $tmpDir\n";
     $error = 1;
   }
 
@@ -687,63 +722,83 @@ sub runLtrRetriever {
       system( "mv $redundantLibFile $outFile" );
       $count = $numRedundant;
     }
-  }
 
-  # Currently there isn't a way to get the orientation of the sequences other than comparing them with
-  # the input.  So here we go:
-  # Read in the library sequences and ranges
-  open IN,"<$outFile" or die;
-  my $seqID = "";
-  my $start = 0;
-  my $end = 0;
-  my $seq = "";
-  my @lib = ();
-  while ( <IN> ) {
-    if ( /^>(\S+):(\d+)\.\.(\d+).*/ ) {
-      my $tmpSeqID = $1;
-      my $tmpStart = $2;
-      my $tmpEnd = $3;
-      if ( $seqID ne "" ) {
-        push @lib,[ $seqID, $start, $end, $seq];
+    if ( -s $outFile ) {
+      # Currently there isn't a way to get the orientation of the sequences other than comparing them with
+      # the input.  So here we go:
+      # Read in the library sequences and ranges
+      open IN,"<$outFile" or die "LTR_retriever failed to generate a file.  Please check $tmpDir/LTR_retriever.log for details.";
+      my $seqID = "";
+      my $start = 0;
+      my $end = 0;
+      my $seq = "";
+      my $suffix = "";
+      my @lib = ();
+      while ( <IN> ) {
+        # e.g.  >utg7180:3885179..3890145_INT#LTR/Gypsy
+        if ( /^>(\S+):(\d+)\.\.(\d+)(.*)/ ) {
+          my $tmpSeqID = $1;
+          my $tmpStart = $2;
+          my $tmpEnd = $3;
+          my $tmpSuffix = $4;
+          if ( $seqID ne "" ) {
+            push @lib,[ $seqID, $start, $end, $seq, $suffix];
+          }
+          $seqID = $tmpSeqID;
+          $start = $tmpStart;
+          $end = $tmpEnd;
+          $seq = "";
+          $suffix = $tmpSuffix;
+          next;
+        }
+        s/[\n\r\s]+//g;
+        $seq .= $_;
       }
-      $seqID = $tmpSeqID;
-      $start = $tmpStart;
-      $end = $tmpEnd;
-      $seq = "";
-      next;
-    }
-    s/[\n\r\s]+//g;
-    $seq .= $_;
-  }
-  if ($seqID ne ""){
-    push @lib,[ $seqID, $start, $end, $seq];
-  }
-  close IN;
+      if ($seqID ne ""){
+        push @lib,[ $seqID, $start, $end, $seq, $suffix];
+      }
+      close IN;
 
-  # Using the sequence file determine the orientation of each sequence
-  # NOTE: This also validates the sequence ranges and flags LTR_retriever
-  # results that have incorrect ranges
-  getOrientation(\@lib, $seqFile);
-  
-  # Backup original outFile and regenerate with oriented ranges.
-  system("mv $outFile $outFile.no_orient");
-  open OUT,">$outFile" or die;
-  foreach my $entry ( @lib ) {
-    my $id = $entry->[0] . ":";
-    if ( $entry->[4] eq "!" ) {
-      $id .= $entry->[1] . ".." . $entry->[2] . " [warning: bad ltr_retriever range]";
-    }elsif ( $entry->[4] eq "+" ) {
-      $id .= $entry->[1] . ".." . $entry->[2] . " [forward]";
-    }else {
-      $id .= $entry->[2] . ".." . $entry->[1] . " [reverse]";
+      # Using the sequence file determine the orientation of each sequence
+      # NOTE: This also validates the sequence ranges and flags LTR_retriever
+      # results that have incorrect ranges
+      getOrientation(\@lib, "$tmpDir/seq.fa");
+      
+      # Backup original outFile and regenerate with oriented ranges.
+      system("mv $outFile $outFile.no_orient");
+      open OUT,">$outFile" or die;
+      foreach my $entry ( @lib ) {
+        my $type = "";
+        if ( $entry->[4] =~ /_LTR/ ) {
+          $type = "_LTR";
+        }elsif ( $entry->[4] =~ /_INT/ ) {
+          $type = "_INT";
+        }
+
+        # Convert ids back to original
+        my $id;
+        if ( $seqIDMap{$entry->[0]} ) {
+          $id = $seqIDMap{$entry->[0]} . ":";
+        }else { die "Could not convert temporary id $entry->[0] back to original id!\n"; }
+        if ( $entry->[5] eq "!" ) {
+          $id .= $entry->[1] . ".." . $entry->[2] . "$type [warning: bad ltr_retriever range]";
+        }elsif ( $entry->[5] eq "+" ) {
+          $id .= $entry->[1] . ".." . $entry->[2] . "$type [forward]";
+        }else {
+          $id .= $entry->[2] . ".." . $entry->[1] . "$type [reverse]";
+        }
+        print OUT ">$id\n$entry->[3]\n";
+      }
+      close OUT;
     }
-    print OUT ">$id\n$entry->[3]\n";
-  }
-  close OUT;
+ }
 
   unless ( $DEBUG || $error ) {
     rmtree( $tmpDir );
   }
+
+  # Cleanup
+  unlink( "$tmpDir/seq.fa" );
 
   return $count;
 }
@@ -753,7 +808,7 @@ sub getOrientation {
   my $lib = shift;
   my $seqFile = shift;
 
-  system("$UCSCTOOLS_DIR/faToTwoBit $seqFile $seqFile.2bit");
+  system("$UCSCTOOLS_DIR/faToTwoBit -long $seqFile $seqFile.2bit");
   if ( ! -s "$seqFile.2bit" ) {
     die "getOrientation: Something went wrong calling $UCSCTOOLS_DIR/faToTwoBit on $seqFile!\n";
   }
@@ -827,104 +882,114 @@ sub getOrientation {
   close IN;
 }
 
+
 sub runLtrHarvest {
-    my $binDir  = shift;
-    my $seqFile = shift;
-    my $outFile = shift;
-    my $threads = shift;
-    my $wrkDir  = shift;
+  my $binDir  = shift;
+  my $seqFile = shift;
+  my $outFile = shift;
+  my $threads = shift;
+  my $wrkDir  = shift;
 
-    die "LTRPipeline::runLtrHarvest : Could not find input file $seqFile\n" if ( !-s $seqFile );
+  die "LTRPipeline::runLtrHarvest : Could not find input file $seqFile\n"
+      if ( !-s $seqFile );
 
-    # Flag to maintain files should an error occur
-    my $errorFlag = 0;
+  # Flag to maintain files should an error occur
+  my $errorFlag = 0;
 
-    # Create temporary directory
-    my $tmpDir;
-    if ( !defined $wrkDir || !-d $wrkDir ) {
+  # Total number of annotations found
+  my $annotCnt = 0;
+
+  # Create temporary directory
+  my $tmpDir;
+  if ( !defined $wrkDir || !-d $wrkDir ) {
     $tmpDir = &createTempDir( [ dirname( $seqFile ), cwd() ], "LHAR" );
-    }
-    else {
+  }
+  else {
     $tmpDir = &createTempDir( [ $wrkDir ], "LHAR" );
-    }
-    print "LTRPipeline::runLtrHarvest : tmpdir = $tmpDir\n" if ( $DEBUG );
+  }
+  print "LTRPipeline::runLtrHarvest : tmpdir = $tmpDir\n" if ( $DEBUG );
 
-    #Get absolute paths
-    my $full_seqFile = File::Spec->rel2abs( $seqFile );
-    my $origDir      = getcwd();
+  # Build enhanced suffix array datastructure for Ltr_harvest
+  # Must run in the tmpDir as this program will insist on creating
+  # esa_* files in the working directory only
+  my $full_seqFile = File::Spec->rel2abs( $seqFile );
+  my $origDir      = getcwd();
+  my $addlOpts     = "";
 
-    #Change Dir
-    chdir( $tmpDir );
+# There is a bug in 1.5.9 and 1.5.10 that appears to not generate the correct files
+# if -j is used.
+#$addlOpts = "-j $options{'threads'} " if ( $options{'threads'} );
+  chdir( $tmpDir );
 
-    #Read sequence file
-    my $seqio = Bio::SeqIO->new(-file => $full_seqFile, '-format' => 'Fasta');
+  #Read sequence file
+  my $seqio = Bio::SeqIO->new(-file => $full_seqFile, '-format' => 'Fasta');
 
-    #Sequence counter, to know where to do each loop
-    my $GlobalseqCounter=0;
-    my $RoundseqCounter=0;
-    my $NumberFile=1;
+  #Sequence counter, to know where to do each loop
+  my $GlobalseqCounter=0;
+  my $RoundseqCounter=0;
+  my $NumberFile=1;
 
-    #Count number of bases for each file
-    my $FastaLength=0;
+  #Count number of bases for each file
+  my $FastaLength=0;
 
-    #Count how many sequences are there in the file for the last loop
-    my $fastaLen = `grep -c '>' $full_seqFile`;
+  #Count how many sequences are there in the file for the last loop
+  my $fastaLen = `grep -c '>' $full_seqFile`;
 
-    #Hash to store all the files and the number of sequences they contain 
-    my %FastaFiles;
+  #Hash to store all the files and the number of sequences they contain 
+  my %FastaFiles;
 
-    #Open the first file
-    my $LTRH_TempFasta="ChunkFasta_".$NumberFile.".fa";
-    open (tempFile_LTRH,'>',$LTRH_TempFasta);
+  #Open the first file
+  my $LTRH_TempFasta="ChunkFasta_".$NumberFile.".fa";
+  open (tempFile_LTRH,'>',$LTRH_TempFasta);
 
-    #Set chunk size for fasta split
-    my $chunkSize = 100000000;
+  #Set chunk size for fasta split
+  my $chunkSize = 100000000;
 
-    #Save files in hash
-    while(my $seq = $seqio->next_seq) {
-        $GlobalseqCounter +=1;
-        $RoundseqCounter  +=1;
-        $FastaLength      +=$seq->length();
-        my $SeqID =$seq->id;
-        my $SeqSeq= join("\n", unpack('(A60)*',$seq->seq));
-        print tempFile_LTRH ">".$SeqID."\n".$SeqSeq."\n";
-        if ($FastaLength > $chunkSize & $GlobalseqCounter != $fastaLen){
-            $FastaFiles{$NumberFile}=[($LTRH_TempFasta,$GlobalseqCounter-$RoundseqCounter,$FastaLength)];
-            $NumberFile+=1;
-            $FastaLength=0;
-            $RoundseqCounter=0;
-            $LTRH_TempFasta="ChunkFasta_".$NumberFile.".fa";
-            close(tempFile_LTRH);
-            open (tempFile_LTRH,'>',$LTRH_TempFasta);
-        }
-        if ($GlobalseqCounter == $fastaLen){
-            $FastaFiles{$NumberFile}=[($LTRH_TempFasta,$GlobalseqCounter-$RoundseqCounter,$FastaLength)];
-            close(tempFile_LTRH);
-        }
-    }
+  #Save files in hash
+  while(my $seq = $seqio->next_seq) {
+      $GlobalseqCounter +=1;
+      $RoundseqCounter  +=1;
+      $FastaLength      +=$seq->length();
+      my $SeqID =$seq->id;
+      my $SeqSeq= join("\n", unpack('(A60)*',$seq->seq));
+      print tempFile_LTRH ">".$SeqID."\n".$SeqSeq."\n";
+      if ($FastaLength > $chunkSize & $GlobalseqCounter != $fastaLen){
+          $FastaFiles{$NumberFile}=[($LTRH_TempFasta,$GlobalseqCounter-$RoundseqCounter,$FastaLength)];
+          $NumberFile+=1;
+          $FastaLength=0;
+          $RoundseqCounter=0;
+          $LTRH_TempFasta="ChunkFasta_".$NumberFile.".fa";
+          close(tempFile_LTRH);
+          open (tempFile_LTRH,'>',$LTRH_TempFasta);
+      }
+      if ($GlobalseqCounter == $fastaLen){
+          $FastaFiles{$NumberFile}=[($LTRH_TempFasta,$GlobalseqCounter-$RoundseqCounter,$FastaLength)];
+          close(tempFile_LTRH);
+      }
+  }
 
-    #Initialize parallelfork manager
-    my $manager_LTRHarvest = Parallel::ForkManager->new($threads);
+  #Initialize parallelfork manager
+  my $manager_LTRHarvest = Parallel::ForkManager->new($threads);
 
-    for my $keys (keys %FastaFiles){
-        #Do the fork
-        $manager_LTRHarvest->start and next;
+  for my $keys (keys %FastaFiles){
+      #Do the fork
+      $manager_LTRHarvest->start and next;
 
-        #Printout the starting message
-        print("LTRPipeline::runLtrHarvest Analysing Chunk Number ${keys}, containing $FastaFiles{$keys}[2]bp...\n");
+      #Printout the starting message
+      print("LTRPipeline::runLtrHarvest Analysing Chunk Number ${keys}, containing $FastaFiles{$keys}[2]bp...\n");
 
-        #Run suffixerator
-        my $SeqRangeEnd=$FastaFiles{$keys}[0]+$FastaFiles{$keys}[2];
+      #Run suffixerator
+      my $SeqRangeEnd=$FastaFiles{$keys}[0]+$FastaFiles{$keys}[2];
 
-        #Check if suffixerator worked
-        my $cmd = "$binDir/gt suffixerator -db $FastaFiles{$keys}[0] -indexname Suffixerator${keys}_index -tis -suf -lcp -des -ssp -sds -dna > Suffixerator.${keys}.log 2>&1";
-        my $retCode = system( $cmd);
+      #Check if suffixerator worked
+      my $cmd = "$binDir/gt suffixerator -db $FastaFiles{$keys}[0] -indexname Suffixerator${keys}_index -tis -suf -lcp -des -ssp -sds -dna > Suffixerator.${keys}.log 2>&1";
+      my $retCode = system( $cmd);
 
-        #Check if suffixerator worked
-            if ( $retCode != 0 ) {
-                warn "LTRPipeline: GenomeTools failed to build suffixtree datastructure.  This is frequently\n". "             caused by a lack of disk space. Error code: " . ( $? >> 8 ) . "\n";
-                $errorFlag = 1;
-            }
+      #Check if suffixerator worked
+          if ( $retCode != 0 ) {
+              warn "LTRPipeline: GenomeTools failed to build suffixtree datastructure.  This is frequently\n". "             caused by a lack of disk space. Error code: " . ( $? >> 8 ) . "\n";
+              $errorFlag = 1;
+          }
 
         #Run LTRHarvest 
         $cmd = "$binDir/gt ltrharvest -index Suffixerator${keys}_index -out LTRHarvest_${keys}_run.out > LTRHarvest_${keys}.log 2>&1";
@@ -935,7 +1000,7 @@ sub runLtrHarvest {
                 warn "LtrPipeline: GenomeTools failed to run ltrharvest. Error code: " . ( $? >> 8 ) . "\n";
                 $errorFlag = 1;
             }
-
+      
         #Fix the results, changing the last number
         print("LTRPipeline::runLtrHarvest Fixing results of Chunk Number ${keys}...\n");
         open(ltrHarvest_out, '<', "LTRHarvest_".$keys.".log");
@@ -971,19 +1036,19 @@ sub runLtrHarvest {
         if (/^#/){
             print OutputFinal_LTRHarvest "$_";
         }
-    }
+    }   
 
     #Merge Files
     for my $keys (sort keys %FastaFiles){
         open(ltrHarvest_out, '<', "$tmpDir/LTRHarvest".$keys.".out");
         while(<ltrHarvest_out>){
-            if (!/^#/){
-                print OutputFinal_LTRHarvest "$_";
-            }
+                      if (!/^#/){
+                  print OutputFinal_LTRHarvest "$_";
         }
     }
+  }
 
-    print("LTRPipeline::LTRHarvest Done\n");
+  print("LTRPipeline::LTRHarvest Done\n");
 }
 
 
@@ -1227,3 +1292,4 @@ sub elapsedTime {
     return 0;
   }
 }
+
