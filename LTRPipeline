@@ -211,7 +211,7 @@ my $inputFile = $ARGV[ 0 ];
 
 ## Temp directory
 my $tempDir;
-if ( $options{'recoverDir'} ) && ( $options{'tmpdir'} ) {
+if ( $options{'recoverDir'} && $options{'tmpdir'} ) {
   $tempDir = $options{'tmpdir'};
 } elsif ( $options{'tmpdir'} ) {
   $tempDir = &createTempDir( [ $options{'tmpdir'}, cwd() ], "LTR" );
@@ -225,9 +225,10 @@ elapsedTime( "runtime" );    # Setup the timers
 
 # Run LTR Detector
 elapsedTime( "step" );
+my $numAnnots;
 if ( $useLtrDet ) {
   print "Running LtrDetector...";
-  my $numAnnots =
+  $numAnnots =
       &runLtrDetector( $LTR_DETECTOR_DIR, $inputFile,
                        "$tempDir/raw-struct-results.txt",
                        $threads, $tempDir );
@@ -240,7 +241,7 @@ if ( $useLtrDet ) {
 else {
   print "Running LtrHarvest...";
   if ( !-e "$tempDir/01__LTRHARVEST_CHECK"){
-    my $numAnnots =
+    $numAnnots =
         &runLtrHarvest( $GENOMETOOLS_DIR, $inputFile,
                         "$tempDir/raw-struct-results.txt",
                         $threads, $tempDir );
