@@ -362,6 +362,7 @@ if ( !-e "$tempDir/04__NINJA_CHECK"){
   close $NINJA_CHECK;
 
   print "             : " . elapsedTime( "step" ) . "\n";
+}
 else {
   print "Skipping NINJA as it has already been run.\n";
 }
