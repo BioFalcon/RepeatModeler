@@ -236,14 +236,23 @@ if ( $useLtrDet ) {
 }
 else {
   print "Running LtrHarvest...";
-  my $numAnnots =
-      &runLtrHarvest( $GENOMETOOLS_DIR, $inputFile,
-                      "$tempDir/raw-struct-results.txt",
-                      $threads, $tempDir );
-  if ( $numAnnots == 0 ) {
-    print
-"LTRPipeline: No results returned from LTR structural finder ( LtrHarvest ).\n";
-    exit;
+  if ( !-e "$tempDir/01__LTRHARVEST_CHECK"){
+    my $numAnnots =
+        &runLtrHarvest( $GENOMETOOLS_DIR, $inputFile,
+                        "$tempDir/raw-struct-results.txt",
+                        $threads, $tempDir );
+    
+    #Create checkpoint file
+    open my $LTRHARCHECK ,">$tempDir/01__LTRHARVEST_CHECK" or die;
+    print $LTRHARCHECK "Number of LTRs: $numAnnots\n";
+    close $LTRHARCHECK;
+
+    if ( $numAnnots == 0 ) {
+      print "LTRPipeline: No results returned from LTR structural finder ( LtrHarvest ).\n";
+      exit;
+    }
+  } else{
+    print "Skipping LtrHarvest as it has already been run.\n";
   }
 }
 print "     : " . elapsedTime( "step" ) . "\n";
@@ -251,20 +260,29 @@ print "     : " . elapsedTime( "step" ) . "\n";
 # Postprocess results using LTR_Retriever
 elapsedTime( "step" );
 print "Running Ltr_retriever...";
-my $ltrCount = &runLtrRetriever(
-                  $LTR_RETRIEVER_DIR,
-                  $inputFile,
-                  "$tempDir/raw-struct-results.txt",
-                  "$tempDir/LtrRetriever-redundant-results.fa",
-                  $threads,
-                  $ltrSeqLimit
-);
-if ( $ltrCount == 0 || ! -s "$tempDir/LtrRetriever-redundant-results.fa" ) {
-  print "LTRPipeline: No results after LTR_Retriever filtering.\n";
-  exit;
-}
-print "  : " . elapsedTime( "step" ) . "\n";
 
+if ( !-e "$tempDir/02__LTRRETRIEVER_CHECK"){
+  my $ltrCount = &runLtrRetriever(
+                    $LTR_RETRIEVER_DIR,
+                    $inputFile,
+                    "$tempDir/raw-struct-results.txt",
+                    "$tempDir/LtrRetriever-redundant-results.fa",
+                    $threads,
+                    $ltrSeqLimit
+  );
+  if ( $ltrCount == 0 || ! -s "$tempDir/LtrRetriever-redundant-results.fa" ) {
+    print "LTRPipeline: No results after LTR_Retriever filtering.\n";
+    exit;
+  }
+  
+  open my $LTRRETRCHECK ,">$tempDir/02__LTRRETRIEVER_CHECK" or die;
+  print $LTRRETRCHECK "Number of LTRs: $ltrCount\n";
+  close $LTRRETRCHECK;
+
+  print "  : " . elapsedTime( "step" ) . "\n";
+} else {
+  print "Skipping Ltr_Retriever as it has already been run.\n";
+}
 #
 # Filter out sequences greater than LTRMaxSeqLen if requested
 #
@@ -307,24 +325,43 @@ if ( $options{'LTRMaxSeqLen'} && $options{'LTRMaxSeqLen'} =~ /\d+/ ) {
 # Group elements into families using a scoring system that accounts for common deletion products
 elapsedTime( "step" );
 print "Aligning instances...";
-&runMafft( $MAFFT_DIR, "$tempDir/LtrRetriever-redundant-results.fa",
-           "$tempDir/mafft-alignment.fa", $threads );
-if ( !-s "$tempDir/mafft-alignment.fa" ) {
-  print
-"LTRPipeline: Error - could not produce a multiple alignment from the denovo LTR results.\n";
-  exit;
+
+if ( !-e "$tempDir/03__MAFFT_CHECK"){
+  &runMafft( $MAFFT_DIR, "$tempDir/LtrRetriever-redundant-results.fa",
+            "$tempDir/mafft-alignment.fa", $threads );
+  if ( !-s "$tempDir/mafft-alignment.fa" ) {
+    print
+  "LTRPipeline: Error - could not produce a multiple alignment from the denovo LTR results.\n";
+    exit;
+  }
+
+  open my $MAFFT_CHECK ,">$tempDir/03__MAFFT_CHECK" or die;
+  print $MAFFT_CHECK "Alignment done\n";
+  close $MAFFT_CHECK;
+
+  print "     : " . elapsedTime( "step" ) . "\n";
+} else {
+  print "Skipping MAFFT as it has already been run.\n";
 }
-print "     : " . elapsedTime( "step" ) . "\n";
 
 #
 elapsedTime( "step" );
 print "Clustering...";
-&runNinja( $NINJA_DIR, "$tempDir/mafft-alignment.fa", "$tempDir/clusters.dat",
-           $threads );
-if ( !-s "$tempDir/clusters.dat" ) {
-  print "LTRPipeline: Error - could not cluster MAFFT results.\n";
+if ( !-e "$tempDir/04__NINJA_CHECK"){  
+  &runNinja( $NINJA_DIR, "$tempDir/mafft-alignment.fa", "$tempDir/clusters.dat",
+            $threads );
+  if ( !-s "$tempDir/clusters.dat" ) {
+    print "LTRPipeline: Error - could not cluster MAFFT results.\n";
+  }
+
+  open my $NINJA_CHECK ,">$tempDir/04__NINJA_CHECK" or die;
+  print $NINJA_CHECK "Clustering done\n";
+  close $NINJA_CHECK;
+
+  print "             : " . elapsedTime( "step" ) . "\n";
+else {
+  print "Skipping NINJA as it has already been run.\n";
 }
-print "             : " . elapsedTime( "step" ) . "\n";
 
 #
 #   Here Jullien screened out families which have similarity to DNA Transposons or LINE elements by searching
@@ -1044,10 +1081,12 @@ sub runLtrHarvest {
         while(<ltrHarvest_out>){
                       if (!/^#/){
                   print OutputFinal_LTRHarvest "$_";
+                  $annotCnt += 1;
         }
     }
   }
 
+  return $annotCnt;
   print("LTRPipeline::LTRHarvest Done\n");
 }
 
