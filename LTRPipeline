@@ -118,6 +118,7 @@ my @getopt_args = (
                     '-giToID=s',
                     '-LTRMaxSeqLen=i',
                     '-threads=i',
+                    '-recoverDir',
 );
 
 # Add configuration parameters as additional command-line options
@@ -210,7 +211,9 @@ my $inputFile = $ARGV[ 0 ];
 
 ## Temp directory
 my $tempDir;
-if ( $options{'tmpdir'} ) {
+if ( $options{'recoverDir'} ) && ( $options{'tmpdir'} ) {
+  $tempDir = $options{'tmpdir'};
+} elsif ( $options{'tmpdir'} ) {
   $tempDir = &createTempDir( [ $options{'tmpdir'}, cwd() ], "LTR" );
 }
 else {
